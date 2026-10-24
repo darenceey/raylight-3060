@@ -385,13 +385,14 @@ if hasattr(model_base, "QwenImage21"):
 
     @USPInjectRegistry.register(model_base.QwenImage21)
     def _inject_qwen21(model_patcher, base_model, *args):
+        from ..comfy_dist.model_patcher import disable_prefix_cache
         from ..diffusion_models.qwen_image.xdit_context_parallel21 import usp_dit_forward
 
         model = base_model.diffusion_model
         model._forward = types.MethodType(usp_dit_forward, model)
-        # The USP forward recomputes the text/reference prefix every step; without this ComfyUI still allocates the
-        # prefix K/V cache for it to ignore.
-        model.can_cache_prefix = lambda transformer_options: False
+        # The USP forward recomputes the text/reference prefix every step; without this newer ComfyUI still allocates
+        # the prefix K/V cache for it to ignore.
+        disable_prefix_cache(model)
 
 
 if hasattr(model_base, "QwenImage"):

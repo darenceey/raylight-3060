@@ -201,18 +201,24 @@ def _pre_init_fsdp(diffusion_model: torch.nn.Module) -> None:
     root_state._lazy_init()
 
 
-def _disable_prefix_cache(diffusion_model: torch.nn.Module) -> None:
+def disable_prefix_cache(diffusion_model: torch.nn.Module) -> None:
     """Keep every rank on the same sequence of block forwards.
 
     Qwen Image 2.1 caches its text/reference prefix K/V only when the rank's
     own free memory allows it. A rank filling the cache runs each block twice
     on that step while a rank without one runs it once, so the per-block FSDP
-    all-gathers stop pairing up across ranks. The cache is also loaded as a
-    dynamic VRAM writable model, which FSDPModelPatcher cannot load. Turning
-    it off makes every rank recompute the prefix instead.
+    all-gathers stop pairing up across ranks. Newer ComfyUI also loads the
+    cache as a dynamic VRAM writable model, which FSDPModelPatcher cannot load.
+
+    ComfyUI switches the cache back on through reset_prefix_cache whenever a
+    patcher starts a run, so pin that off; every rank then recomputes the
+    prefix instead.
     """
-    if hasattr(diffusion_model, "can_cache_prefix"):
-        diffusion_model.can_cache_prefix = lambda transformer_options: False
+    reset = getattr(diffusion_model, "reset_prefix_cache", None)
+    if reset is None:
+        return
+    diffusion_model.reset_prefix_cache = lambda enabled: reset(False)
+    reset(False)
 
 
 def _collect_controlnet_shared_modules(diffusion_model: torch.nn.Module) -> set[torch.nn.Module]:
@@ -354,7 +360,7 @@ def patch_fsdp(self):
                 print(f"[Rank {self.rank}] Materialized {count} excluded ControlNet-shared params on {target_device}")
 
         _pre_init_fsdp(diffusion_model)
-    _disable_prefix_cache(diffusion_model)
+    disable_prefix_cache(diffusion_model)
     self.fsdp_state_dict = None
 
     print("FSDP registered successfully.")

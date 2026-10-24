@@ -1180,6 +1180,19 @@ def decode_tiled_3d(self, samples, tile_t=999, tile_x=32, tile_y=32, overlap=(1,
     )
 
 
+def _restore_built_dtypes(model, built_dtypes):
+    #An assigning load keeps every checkpoint tensor as it is, so a requested
+    #weight dtype - fp8 from a bf16 file, say - never lands: only the copy a
+    #plain load makes converts into the parameters the model was built with.
+    for name, param in list(model.named_parameters()):
+        dtype = built_dtypes.get(name)
+        if dtype is None or param.dtype == dtype or not dtype.is_floating_point:
+            continue
+        if comfy_dist.model_patcher._is_quantized_tensor_like(param):
+            continue
+        comfy.utils.set_attr_param(model, name, param.data.to(dtype))
+
+
 ##################################################
 # TEMPORARY FOR PREVIOUS Fp8 forward, MODIFIYING HERE
 ##################################################
@@ -1253,7 +1266,9 @@ def fsdp_load_diffusion_model_stat_dict(sd, rank, device_mesh, is_cpu_offload, m
         device_mesh=device_mesh,
         is_cpu_offload=is_cpu_offload,
     )
+    built_dtypes = {name: param.dtype for name, param in model.named_parameters()}
     model.load_model_weights(new_sd, "", assign=model_patcher.is_dynamic())
+    _restore_built_dtypes(model, built_dtypes)
     if not model_management.is_device_cpu(offload_device):
         model.to(offload_device)
     left_over = sd.keys()

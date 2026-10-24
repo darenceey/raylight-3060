@@ -25,6 +25,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 CUDA = torch.cuda.is_available()
+if CUDA and "LOCAL_RANK" in os.environ:
+    # before comfy picks its device at import, so every rank opens its context on its own card
+    torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
 if not CUDA:
     # comfy picks its device at import and needs telling there is no card
     import comfy.cli_args
@@ -34,6 +37,7 @@ if not CUDA:
 import safetensors.torch
 from torch.distributed.device_mesh import init_device_mesh
 
+import comfy.model_management
 import comfy.ops
 import comfy.patcher_extension
 import comfy.sample
@@ -99,12 +103,17 @@ def _forward(patcher, inputs, transformer_options=None):
 
 
 class _Group:
+    """xFuser's group coordinator, reduced to the all_gather Raylight calls."""
+
     def __init__(self, group):
         self.group = group
 
     def all_gather(self, tensor, dim):
+        # xFuser hands its input straight to all_gather_into_tensor, which NCCL refuses for a non-contiguous view
+        if not tensor.is_contiguous():
+            raise ValueError("Tensors must be contiguous")
         parts = [torch.empty_like(tensor) for _ in range(dist.get_world_size(self.group))]
-        dist.all_gather(parts, tensor.contiguous(), group=self.group)
+        dist.all_gather(parts, tensor, group=self.group)
         return torch.cat(parts, dim=dim)
 
 
@@ -174,16 +183,17 @@ class QwenImage21FSDPTest(unittest.TestCase):
 
     def _reference(self, quant_format=None):
         reference = comfy.sd.load_diffusion_model(self._path(quant_format), model_options=dict(MODEL_OPTIONS))
-        reference.model.to(self.device)
+        comfy.model_management.load_models_gpu([reference])
         return reference
 
-    def _fsdp(self, quant_format=None):
+    def _fsdp(self, quant_format=None, model_options=MODEL_OPTIONS):
         patcher, state_dict = fsdp_load_diffusion_model(self._path(quant_format), self.rank, self.mesh, False,
-                                                        model_options=dict(MODEL_OPTIONS))
+                                                        model_options=dict(model_options))
         patcher.set_fsdp_state_dict(state_dict)
+        # what sampling does: the worker wraps, then ComfyUI loads, which places the unsharded modules and, for Qwen
+        # 2.1, sets the current patcher - that used to switch the prefix cache back on
         patcher.patch_fsdp()
-        # what FSDPModelPatcher.load sets; for Qwen 2.1 it also re-enables the prefix cache unless FSDP keeps it off
-        patcher.model.current_patcher = patcher
+        comfy.model_management.load_models_gpu([patcher])
         return patcher
 
     def _all_ranks(self, ok):
@@ -278,6 +288,18 @@ class QwenImage21FSDPTest(unittest.TestCase):
             actual = _forward(patcher, inputs, _cfg_options())
         self._assert_close_on_all_ranks(actual, _forward(reference, inputs), rtol=1e-4, atol=1e-4)
 
+    def test_fp8_weight_dtype_matches_full_model(self):
+        if not CUDA:
+            self.skipTest(CPU_UNSHARDABLE["float8_e4m3fn"])
+        # fp8 asked of a full-precision file, the way RayUNETLoader's weight_dtype does it; ComfyUI's plain loader
+        # converts at load time, as Raylight's FSDP loader does
+        options = {"dtype": torch.float8_e4m3fn}
+        reference = comfy.sd.load_diffusion_model(self._path(), model_options=dict(options), disable_dynamic=True)
+        comfy.model_management.load_models_gpu([reference])
+        patcher = self._fsdp(model_options=options)
+        inputs = _inputs(self.device, 1, 4, 6, text_len=5, refs=[(2, 2)], slots=[1], seed=12 + self.rank)
+        self._assert_close_on_all_ranks(_forward(patcher, inputs), _forward(reference, inputs))
+
     def test_quantized_checkpoints_match_full_model(self):
         for quant_format in QUANT_FORMATS:
             with self.subTest(quant_format=quant_format):
@@ -295,8 +317,6 @@ class QwenImage21FSDPTest(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    if CUDA:
-        torch.cuda.set_device(int(os.environ.get("LOCAL_RANK", 0)))
     dist.init_process_group("nccl" if CUDA else "gloo", timeout=timedelta(seconds=120))
     try:
         unittest.main()

@@ -246,7 +246,7 @@ parallel_dict["fsdp_cpu_offload"] = True
 
 **Cause**: The model's forward takes a different path on some rank, for example a cache that each GPU turns on or off from its own free VRAM. The ranks then call a different sequence of FSDP-wrapped modules and their per-module all-gathers stop pairing up.
 
-**Solution**: Make the choice identical on every rank. Qwen Image 2.1's prefix K/V cache is switched off under FSDP for this reason (`_disable_prefix_cache` in `comfy_dist/model_patcher.py`).
+**Solution**: Make the choice identical on every rank. Qwen Image 2.1's prefix K/V cache is switched off under FSDP for this reason (`disable_prefix_cache` in `comfy_dist/model_patcher.py`).
 
 ## See Also
 

@@ -98,10 +98,11 @@ def _chunk_extra_kwargs(extra_kwargs, cfg_world_size, cfg_rank, skip_names):
 
 
 def _gather_value(value):
+    # all_gather_into_tensor rejects views, and a model output can be one (Qwen Image 2.1 returns a transposed reshape)
     if isinstance(value, torch.Tensor):
-        return get_cfg_group().all_gather(value, dim=0)
+        return get_cfg_group().all_gather(value.contiguous(), dim=0)
     if isinstance(value, NestedTensor):
-        return NestedTensor(get_cfg_group().all_gather(item, dim=0) for item in value.unbind())
+        return NestedTensor(get_cfg_group().all_gather(item.contiguous(), dim=0) for item in value.unbind())
     if isinstance(value, dict):
         return {key: _gather_value(item) for key, item in value.items()}
     if isinstance(value, list):

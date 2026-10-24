@@ -273,7 +273,7 @@ This is experimental mode where all type of parallel group can work at a sime ti
 | Model                 | USP | FSDP | CFG |
 |-----------------------|-----|------|-----|
 | Qwen Image/Edit       | ✅  | ✅   | ✅  |
-| Qwen Image 2.1 (BETA) | ✅  | ❓   | ❓  |
+| Qwen Image 2.1 (BETA) | ✅  | ✅   | ✅  |
 | ControlNet            | ✅  | ✅   | ✅  |
 
 
@@ -347,6 +347,9 @@ This is experimental mode where all type of parallel group can work at a sime ti
 - Non standard Wan variant (Phantom, etc...) is not tested
 - CFG parallel for Flux, Hunyuan, is technically supported by Raylight,
   but since these models do not support conditional batches (CFG = 1), enabling it has no effect.
+- CFG parallel for Qwen Image 2.1 needs the positive and negative prompts to encode to the same length
+  (a zeroed-out negative, for example); otherwise ComfyUI samples them as separate batches and there is
+  nothing to split.
 - Chroma and Hunyuan Video ControlNet support is implemented in the USP/FSDP code paths
   but no ControlNet model weights are currently available in ComfyUI to test with.
 - Only one ControlNet model per workflow is supported. To apply the same model with

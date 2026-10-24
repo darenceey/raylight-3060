@@ -163,21 +163,27 @@ def test_qwen21_block_replacement_receives_full_sequence():
     assert calls == [(5, 2, 5), (5, 2, 5)]
 
 
-def test_qwen21_prefix_cache_is_disabled_under_fsdp_and_usp():
+def test_qwen21_prefix_cache_stays_off_under_fsdp_and_usp():
     import comfy.supported_models
     from comfy import model_base
-    from raylight.comfy_dist.model_patcher import _disable_prefix_cache
+    from raylight.comfy_dist.model_patcher import disable_prefix_cache
     from raylight.distributed_modules.usp import USPInjectRegistry
 
     config = comfy.supported_models.QwenImage21({"image_model": "qwen_image21", "in_channels": 64, "out_channels": 64,
                                                  "num_layers": 1, "attention_head_dim": 128, "num_attention_heads": 1,
                                                  "context_in_dim": 32, "mlp_ratio": 1})
     config.set_inference_dtype(torch.float32, None)
-    for disable in (_disable_prefix_cache, lambda diffusion_model: USPInjectRegistry._REGISTRY[model_base.QwenImage21](
+    # what pre_run hands the model at the start of every sampling run
+    patcher = SimpleNamespace(hook_patches={})
+    for disable in (disable_prefix_cache, lambda diffusion_model: USPInjectRegistry._REGISTRY[model_base.QwenImage21](
             None, SimpleNamespace(diffusion_model=diffusion_model))):
         model = config.get_model({})
-        model.diffusion_model.prefix_cache_enabled = True
-        assert model.diffusion_model.can_cache_prefix({})
+        model.current_patcher = patcher
+        assert model.diffusion_model.prefix_cache_enabled
         disable(model.diffusion_model)
-        assert not model.diffusion_model.can_cache_prefix({})
-        assert model.get_writable_model({}, (1, 64, 2, 2), {}, torch.device("cpu")) is None
+        assert not model.diffusion_model.prefix_cache_enabled
+        model.current_patcher = None
+        model.current_patcher = patcher
+        assert not model.diffusion_model.prefix_cache_enabled
+        if hasattr(model, "get_writable_model"):  # ComfyUI with dynamic VRAM KV caches
+            assert model.get_writable_model({}, (1, 64, 2, 2), {}, torch.device("cpu")) is None
