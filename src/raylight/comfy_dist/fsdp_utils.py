@@ -681,10 +681,20 @@ def load_from_full_model_state_dict(
     release_sd=True,
 ):
     meta_sharded_sd = model.state_dict()
-    own_params = set(meta_sharded_sd)
+    #A quantized ComfyUI op that FSDP left unwrapped - a ControlNet-shared
+    #module, say - writes its payload (weight_scale, comfy_quant, ...) into its
+    #state_dict beside the weight. Those entries are not tensors the model
+    #holds: building the weight consumes them. Handed back to load_state_dict,
+    #comfy_quant makes the op decode its finished weight a second time as raw
+    #checkpoint data, which corrupts it.
+    held = {name for name, _ in model.named_parameters(remove_duplicate=False)}
+    held |= {name for name, _ in model.named_buffers(remove_duplicate=False)}
+    own_params = set(meta_sharded_sd) & held
     sharded_sd: dict[str, torch.Tensor] = {}
     unsharded_params = []
     for param_name, sharded_meta_param in meta_sharded_sd.items():
+        if param_name not in held:
+            continue
         parent_module, leaf_name = _get_parent_module_and_name(model, param_name)
         is_buffer = leaf_name in parent_module._buffers
         if not is_buffer and _should_materialize_unsharded_param(param_name, sharded_meta_param, full_sd):

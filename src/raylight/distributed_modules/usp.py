@@ -389,6 +389,9 @@ if hasattr(model_base, "QwenImage21"):
 
         model = base_model.diffusion_model
         model._forward = types.MethodType(usp_dit_forward, model)
+        # The USP forward recomputes the text/reference prefix every step; without this ComfyUI still allocates the
+        # prefix K/V cache for it to ignore.
+        model.can_cache_prefix = lambda transformer_options: False
 
 
 if hasattr(model_base, "QwenImage"):

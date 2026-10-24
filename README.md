@@ -273,7 +273,7 @@ This is experimental mode where all type of parallel group can work at a sime ti
 | Model                 | USP | FSDP | CFG |
 |-----------------------|-----|------|-----|
 | Qwen Image/Edit       | ✅  | ✅   | ✅  |
-| Qwen Image 2.1 (BETA) | ✅  | ❌   | ❓  |
+| Qwen Image 2.1 (BETA) | ✅  | ❓   | ❓  |
 | ControlNet            | ✅  | ✅   | ✅  |
 
 

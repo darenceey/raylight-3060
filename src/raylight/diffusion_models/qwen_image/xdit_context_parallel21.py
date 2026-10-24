@@ -1,22 +1,33 @@
 import torch
 
 import comfy.model_prefetch
-from comfy.ldm.modules.attention import optimized_attention
+from comfy.ldm.modules.attention import AttentionTensorContainer, optimized_attention
 from comfy.ldm.qwen_image21.model import _split_rows, block_causal_attention
 from xfuser.core.distributed import get_sequence_parallel_rank, get_sequence_parallel_world_size, get_sp_group
 
 from ..utils import pad_to_world_size
 
 
-def _target_attention(q, k, v, heads, prefix_kv, target_len, transformer_options, preferred_attention=None):
-    group = get_sp_group()
-    k = group.all_gather(k.contiguous(), dim=1)[:, :target_len]
-    v = group.all_gather(v.contiguous(), dim=1)[:, :target_len]
-    if prefix_kv:
-        k = torch.cat((prefix_kv[0], k), dim=1)
-        v = torch.cat((prefix_kv[1], v), dim=1)
-    return optimized_attention(q.flatten(2), k.flatten(2), v.flatten(2), heads,
-                               transformer_options=transformer_options, preferred_attention=preferred_attention)
+def _sharded_attention(segments, prefix_len, target_len, transformer_options):
+    # Local rows are [prefix, target shard]. The prefix is replicated on every rank and keeps its block-causal attention,
+    # the target shard attends to the prefix and the whole target gathered from the SP group.
+    prefix_attention = block_causal_attention(segments[:-1], transformer_options)
+
+    def attn(q, k, v, heads, preferred_attention=None):
+        q, k, v = q.take(), k.take(), v.take()
+        group = get_sp_group()
+        target_k = group.all_gather(k[:, prefix_len:].contiguous(), dim=1)[:, :target_len]
+        target_v = group.all_gather(v[:, prefix_len:].contiguous(), dim=1)[:, :target_len]
+        out = optimized_attention(AttentionTensorContainer(q[:, prefix_len:].flatten(2)),
+                                  AttentionTensorContainer(torch.cat((k[:, :prefix_len], target_k), dim=1).flatten(2)),
+                                  AttentionTensorContainer(torch.cat((v[:, :prefix_len], target_v), dim=1).flatten(2)),
+                                  heads, transformer_options=transformer_options, preferred_attention=preferred_attention)
+        if not prefix_len:
+            return out
+        prefix = prefix_attention(AttentionTensorContainer(q[:, :prefix_len]), AttentionTensorContainer(k[:, :prefix_len]),
+                                  AttentionTensorContainer(v[:, :prefix_len]), heads, preferred_attention=preferred_attention)
+        return torch.cat((prefix, out), dim=1)
+    return attn
 
 
 def usp_dit_forward(self, x, timesteps, context, ref_latents=None, image_slots=None, transformer_options={}, **kwargs):
@@ -38,14 +49,19 @@ def usp_dit_forward(self, x, timesteps, context, ref_latents=None, image_slots=N
     mod = (_split_rows(scale1), _split_rows(gate1.tanh()), _split_rows(scale2), _split_rows(gate2.tanh()), torch.zeros_like(scale1[:1, None]))
 
     target_len = hidden_states.shape[1] - prefix_len
-    prefix = hidden_states[:, :prefix_len]
-    prefix_pe = pe[:, :prefix_len]
-    target, _ = pad_to_world_size(hidden_states[:, prefix_len:], dim=1)
-    target_pe, _ = pad_to_world_size(pe[:, prefix_len:], dim=1)
     rank = get_sequence_parallel_rank()
     world_size = get_sequence_parallel_world_size()
-    target = torch.chunk(target, world_size, dim=1)[rank]
-    target_pe = torch.chunk(target_pe, world_size, dim=1)[rank]
+
+    def shard(full):
+        # Each block runs once per rank on [prefix, target shard], so an FSDP rank gathers the block's weights once.
+        target, _ = pad_to_world_size(full[:, prefix_len:], dim=1)
+        return torch.cat((full[:, :prefix_len], torch.chunk(target, world_size, dim=1)[rank]), dim=1)
+
+    def gather_target(local):
+        return get_sp_group().all_gather(local[:, prefix_len:].contiguous(), dim=1)[:, :target_len]
+
+    local_states = shard(hidden_states)
+    local_pe = shard(pe)
 
     blocks_replace = transformer_options.get("patches_replace", {}).get("dit", {})
     transformer_options["total_blocks"] = len(self.transformer_blocks)
@@ -56,42 +72,26 @@ def usp_dit_forward(self, x, timesteps, context, ref_latents=None, image_slots=N
         transformer_options["block_index"] = i
         if (("single_block", i) in blocks_replace or patches.get("single_block") or patches.get("attn1_patch") or
                 transformer_options.get("optimized_attention_override") is not None or block.attn.comfy_attention.function is not None):
-            full_target = get_sp_group().all_gather(target.contiguous(), dim=1)[:, :target_len]
-            hidden_states = torch.cat((prefix, full_target), dim=1)
+            hidden_states = torch.cat((local_states[:, :prefix_len], gather_target(local_states)), dim=1)
             attn_fn = block_causal_attention(segments, transformer_options, block_index=i, prefix_len=prefix_len)
             if ("single_block", i) in blocks_replace:
                 def block_wrap(args):
                     return {"img": block(args["img"], mod, args["pe"], attn_fn, prefix_len, args["transformer_options"])}
-                hidden_states = blocks_replace[("single_block", i)](
-                    {"img": hidden_states, "vec": temb, "pe": pe, "transformer_options": transformer_options},
-                    {"original_block": block_wrap})["img"]
+                args = {"img": hidden_states, "vec": temb, "pe": pe, "mod": mod, "attn_fn": attn_fn, "prefix_len": prefix_len,
+                        "transformer_options": transformer_options}
+                hidden_states = blocks_replace[("single_block", i)](args, {"original_block": block_wrap})["img"]
             else:
                 hidden_states = block(hidden_states, mod, pe, attn_fn, prefix_len, transformer_options)
             for p in patches.get("single_block", []):
                 hidden_states = p({"img": hidden_states, "x": x, "block_index": i, "transformer_options": transformer_options})["img"]
-            prefix = hidden_states[:, :prefix_len].clone()
-            full_target = hidden_states[:, prefix_len:].clone()
-            full_target, _ = pad_to_world_size(full_target, dim=1)
-            target = torch.chunk(full_target, world_size, dim=1)[rank]
+            local_states = shard(hidden_states)
             continue
 
-        prefix_kv = []
-        if prefix_len:
-            causal = block_causal_attention(segments[:-1], transformer_options, block_index=i, prefix_len=prefix_len)
-
-            def prefix_attention(q, k, v, heads, preferred_attention=None):
-                prefix_kv.extend((k, v))
-                return causal(q, k, v, heads, preferred_attention=preferred_attention)
-
-            prefix = block(prefix, mod, prefix_pe, prefix_attention, prefix_len, transformer_options)
-
-        def target_attention(q, k, v, heads, preferred_attention=None):
-            return _target_attention(q, k, v, heads, prefix_kv, target_len, transformer_options, preferred_attention)
-
-        target = block(target, mod, target_pe, target_attention, 0, transformer_options)
+        attn_fn = _sharded_attention(segments, prefix_len, target_len, transformer_options)
+        local_states = block(local_states, mod, local_pe, attn_fn, prefix_len, transformer_options)
 
     comfy.model_prefetch.prefetch_queue_pop(prefetch_queue, x.device, None)
-    target = get_sp_group().all_gather(target.contiguous(), dim=1)[:, :target_len]
+    target = gather_target(local_states)
     target = self.norm_out(target, temb[:-1])
     target = self.proj_out(target)
     return target.transpose(1, 2).reshape(b, self.out_channels, h, w)
