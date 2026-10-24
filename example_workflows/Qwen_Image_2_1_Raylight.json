@@ -1,0 +1,626 @@
+{
+  "id": "5afb830b-2ab2-4bb7-a70d-36c60592ff5a",
+  "revision": 0,
+  "last_node_id": 13,
+  "last_link_id": 11,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "RayInitializer",
+      "pos": [
+        40,
+        -60
+      ],
+      "size": [
+        320,
+        420
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "ray_actors_init",
+          "type": "RAY_ACTORS_INIT",
+          "links": [
+            1
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "RayInitializer"
+      },
+      "widgets_values": [
+        "local",
+        "default",
+        2,
+        2,
+        1,
+        1,
+        1,
+        false,
+        false,
+        true,
+        false,
+        "TORCH_FLASH",
+        false,
+        false
+      ]
+    },
+    {
+      "id": 2,
+      "type": "CLIPLoader",
+      "pos": [
+        40,
+        400
+      ],
+      "size": [
+        320,
+        106
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            2
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPLoader",
+        "models": [
+          {
+            "name": "qwen3vl_8b_bf16.safetensors",
+            "url": "https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/text_encoders/qwen3vl_8b_bf16.safetensors",
+            "directory": "text_encoders"
+          }
+        ]
+      },
+      "widgets_values": [
+        "qwen3vl_8b_bf16.safetensors",
+        "qwen_image",
+        "default"
+      ]
+    },
+    {
+      "id": 3,
+      "type": "VAELoader",
+      "pos": [
+        40,
+        550
+      ],
+      "size": [
+        320,
+        58
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            10
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAELoader",
+        "models": [
+          {
+            "name": "qwen_image_2.1_vae_bf16.safetensors",
+            "url": "https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/vae/qwen_image_2.1_vae_bf16.safetensors",
+            "directory": "vae"
+          }
+        ]
+      },
+      "widgets_values": [
+        "qwen_image_2.1_vae_bf16.safetensors"
+      ]
+    },
+    {
+      "id": 4,
+      "type": "RayUNETLoader",
+      "pos": [
+        400,
+        -60
+      ],
+      "size": [
+        440,
+        82
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "ray_actors_init",
+          "type": "RAY_ACTORS_INIT",
+          "link": 1
+        },
+        {
+          "name": "lora",
+          "shape": 7,
+          "type": "RAY_LORA",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "ray_actors",
+          "type": "RAY_ACTORS",
+          "links": [
+            5
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "RayUNETLoader",
+        "models": [
+          {
+            "name": "qwen_image_2.1_bf16.safetensors",
+            "url": "https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/diffusion_models/qwen_image_2.1_bf16.safetensors",
+            "directory": "diffusion_models"
+          }
+        ]
+      },
+      "widgets_values": [
+        "qwen_image_2.1_bf16.safetensors",
+        "default"
+      ]
+    },
+    {
+      "id": 5,
+      "type": "TextEncodeQwenImage21",
+      "pos": [
+        400,
+        70
+      ],
+      "size": [
+        440,
+        440
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 2
+        },
+        {
+          "localized_name": "image_1",
+          "name": "images.image_1",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "vae",
+          "shape": 7,
+          "type": "VAE",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "links": [
+            3
+          ]
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "links": [
+            4
+          ]
+        },
+        {
+          "name": "latent",
+          "type": "LATENT",
+          "links": [
+            8
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TextEncodeQwenImage21"
+      },
+      "widgets_values": [
+        "A red fox sitting on a mossy log in a misty pine forest at dawn, soft golden light through the trees, detailed fur, shallow depth of field, a small wooden sign on the log that reads \"RAYLIGHT\"",
+        "",
+        1024
+      ]
+    },
+    {
+      "id": 6,
+      "type": "RayCleanVRAMUsed",
+      "pos": [
+        870,
+        150
+      ],
+      "size": [
+        200,
+        26
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "anything",
+          "type": "*",
+          "link": 3
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "type": "*",
+          "links": [
+            6
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "RayCleanVRAMUsed"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 7,
+      "type": "RayCleanVRAMUsed",
+      "pos": [
+        870,
+        220
+      ],
+      "size": [
+        200,
+        26
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "anything",
+          "type": "*",
+          "link": 4
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "type": "*",
+          "links": [
+            7
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "RayCleanVRAMUsed"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 8,
+      "type": "XFuserKSamplerAdvanced",
+      "pos": [
+        1100,
+        -60
+      ],
+      "size": [
+        320,
+        334
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "ray_actors",
+          "type": "RAY_ACTORS",
+          "link": 5
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 6
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 7
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 8
+        }
+      ],
+      "outputs": [
+        {
+          "name": "latent",
+          "type": "LATENT",
+          "links": [
+            9
+          ]
+        },
+        {
+          "name": "ray_actors",
+          "type": "RAY_ACTORS",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "XFuserKSamplerAdvanced"
+      },
+      "widgets_values": [
+        "enable",
+        1234,
+        "randomize",
+        20,
+        1,
+        "euler",
+        "simple",
+        0,
+        10000,
+        "disable",
+        1
+      ]
+    },
+    {
+      "id": 9,
+      "type": "VAEDecode",
+      "pos": [
+        1460,
+        -60
+      ],
+      "size": [
+        210,
+        46
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 9
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 10
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            11
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAEDecode"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 10,
+      "type": "SaveImage",
+      "pos": [
+        1460,
+        40
+      ],
+      "size": [
+        520,
+        580
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 11
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "SaveImage"
+      },
+      "widgets_values": [
+        "Raylight_Qwen_Image_2.1"
+      ]
+    },
+    {
+      "id": 11,
+      "type": "MarkdownNote",
+      "pos": [
+        -470,
+        -320
+      ],
+      "size": [
+        480,
+        1010
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "## Qwen Image 2.1 on Raylight\n\n**Models** from [Comfy-Org/Qwen-Image-2.1](https://huggingface.co/Comfy-Org/Qwen-Image-2.1):\n- `diffusion_models/qwen_image_2.1_bf16.safetensors` (14.2 GB), or `qwen_image_2.1_int8_convrot.safetensors` (7.3 GB)\n- `text_encoders/qwen3vl_8b_bf16.safetensors` (17.5 GB), or `qwen3vl_8b_int8_convrot.safetensors` (9.4 GB)\n- `vae/qwen_image_2.1_vae_bf16.safetensors`\n\n---\n\n## Parallelism (Ray Init Actor)\n\n- **USP + FSDP** (this workflow): `ulysses_degree` = number of GPUs, `ring_degree` 1, `FSDP` on. The BF16 model does not fit a 12 GB card by itself; FSDP shards its weights across the GPUs.\n- **Less VRAM**: also turn on `FSDP_CPU_OFFLOAD` (slower), set `weight_dtype` to fp8_e4m3fn in Load Diffusion Model (Ray), or use the int8_convrot file.\n- **CFG parallel**: `cfg_degree` 2 and cfg above 1. The positive and negative must encode to the same length (a zeroed-out negative, for example), otherwise there is nothing to split. Qwen Image 2.1 normally runs at cfg 1.\n- **Data parallel** (one image per GPU): Data Parallel KSampler with a Data Parallel Noise List; `ulysses_degree`, `ring_degree` and `cfg_degree` at 0.\n\nMeasured on 2x RTX 3060 12 GB with these settings (BF16, FSDP + USP, 1024x1024, 20 steps): about 100 s from a cold start including model loading, peaking near 9.3 / 8.5 GB per GPU. With FSDP CPU offload the peak was about 4.8 / 4.2 GB.\n\nThe Qwen Image 2.1 Cache node does not apply: under USP and FSDP, Raylight keeps the prompt prefix cache off and recomputes it every step.\n\n---\n\n### [Raylight on GitHub](https://github.com/komikndr/raylight)\n### [Raylight guide on YouTube](https://youtu.be/KQxrkJAV4eI?si=hAFY1rKD6Y2UHXqY)\n"
+      ],
+      "title": "Qwen Image 2.1 on Raylight",
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 12,
+      "type": "Note",
+      "pos": [
+        40,
+        -320
+      ],
+      "size": [
+        320,
+        220
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "Set ulysses_degree to the number of GPUs and keep ring_degree at 1.\n\nFSDP is what lets the 14 GB BF16 model run on 12 GB cards. Turn it off if the whole model fits on each card."
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 13,
+      "type": "Note",
+      "pos": [
+        870,
+        290
+      ],
+      "size": [
+        200,
+        180
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "Clean VRAM Used unloads the text encoder from the ComfyUI process once the prompt is encoded, leaving that VRAM to the Ray workers sharing the card."
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      4,
+      0,
+      "RAY_ACTORS_INIT"
+    ],
+    [
+      2,
+      2,
+      0,
+      5,
+      0,
+      "CLIP"
+    ],
+    [
+      3,
+      5,
+      0,
+      6,
+      0,
+      "*"
+    ],
+    [
+      4,
+      5,
+      1,
+      7,
+      0,
+      "*"
+    ],
+    [
+      5,
+      4,
+      0,
+      8,
+      0,
+      "RAY_ACTORS"
+    ],
+    [
+      6,
+      6,
+      0,
+      8,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      7,
+      7,
+      0,
+      8,
+      2,
+      "CONDITIONING"
+    ],
+    [
+      8,
+      5,
+      2,
+      8,
+      3,
+      "LATENT"
+    ],
+    [
+      9,
+      8,
+      0,
+      9,
+      0,
+      "LATENT"
+    ],
+    [
+      10,
+      3,
+      0,
+      9,
+      1,
+      "VAE"
+    ],
+    [
+      11,
+      9,
+      0,
+      10,
+      0,
+      "IMAGE"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.75,
+      "offset": [
+        560,
+        420
+      ]
+    },
+    "frontendVersion": "1.55.18"
+  },
+  "version": 0.4
+}
