@@ -6,8 +6,14 @@ from xfuser.core.distributed import (
 )
 import raylight.distributed_modules.attention as xfuser_attn
 import comfy
+import comfy.ldm.lightricks.model
 from comfy.ldm.lightricks.model import apply_rotary_emb
+
+GuideAttentionMask = getattr(comfy.ldm.lightricks.model, "GuideAttentionMask", None)  # ComfyUI before guide masks: None
 from ..utils import pad_to_world_size
+
+# Unpadded lengths of the sequences the attention keys come from, in transformer_options: {source: length}
+SP_LENGTHS_KEY = "raylight_sp_lengths"
 
 attn_type = xfuser_attn.get_attn_type()
 sync_ulysses = xfuser_attn.get_sync_ulysses()
@@ -121,6 +127,57 @@ def process_usp_timestep(timestep, sp_rank, sp_world_size):
     return timestep
 
 
+def _sequence_lengths(x_orig, context_orig):
+    """Unpadded token counts per key source: LTXV has video and text, LTXAV video, audio and their two text streams."""
+    if isinstance(x_orig, list):
+        return {"video": x_orig[0], "audio": x_orig[1], "video_context": context_orig[0], "audio_context": context_orig[1]}
+    return {"video": x_orig, "video_context": context_orig}
+
+
+def set_kv_sources(model):
+    """Tag every attention with the sequence its keys come from (see SP_LENGTHS_KEY)."""
+    sources = {"attn1": "video", "attn2": "video_context", "audio_attn1": "audio", "audio_attn2": "audio_context",
+               "audio_to_video_attn": "audio", "video_to_audio_attn": "video"}
+    for block in model.transformer_blocks:
+        for name, source in sources.items():
+            attention = getattr(block, name, None)
+            if attention is not None:
+                attention.raylight_kv_source = source
+
+
+def _guide_attention_mask(model, x, transformer_options, merged_args):
+    """ComfyUI's guide self-attention mask for the whole (unsplit) video sequence, or None (older ComfyUI, no guides)."""
+    build = getattr(model, "_build_guide_self_attention_mask", None)
+    return None if build is None else build(x, transformer_options, merged_args)
+
+
+def _guide_attention(q, k, v, heads, guide_mask, row_start, attn_precision, transformer_options):
+    """ComfyUI's _attention_with_guide_mask for this rank's queries, rows row_start onward of the video sequence.
+
+    k and v hold every video token. As in ComfyUI the queries split into noisy, tracked-guide and remaining rows, so no
+    dense (queries x keys) mask is built.
+    """
+    attention = comfy.ldm.modules.attention.optimized_attention
+    guide_start = guide_mask.guide_start
+    tracked_end = guide_start + guide_mask.tracked_count
+    rows = q.shape[1]
+    out = torch.empty_like(q)
+
+    def run(lo, hi, mask):
+        lo, hi = max(lo - row_start, 0), min(hi - row_start, rows)
+        if lo < hi:
+            out[:, lo:hi] = attention(q[:, lo:hi], k, v, heads, mask=mask, attn_precision=attn_precision,
+                                      transformer_options=transformer_options)
+
+    run(0, guide_start, guide_mask.noisy_mask)
+    # the tracked mask's rows are the guide tokens' rows: take the ones this rank holds
+    lo, hi = max(guide_start, row_start), min(tracked_end, row_start + rows)
+    if lo < hi:
+        run(lo, hi, guide_mask.tracked_mask[:, :, lo - guide_start:hi - guide_start])
+    run(tracked_end, row_start + rows, None)
+    return out
+
+
 def usp_dit_forward(
     self, x, timestep, context, attention_mask, frame_rate=25, transformer_options={}, keyframe_idxs=None, denoise_mask=None, *args, **kwargs
 ):
@@ -172,10 +229,14 @@ def usp_dit_forward(
     # Prepare attention mask and positional embeddings
     attention_mask = self._prepare_attention_mask(attention_mask, input_dtype)
     pe = self._prepare_positional_embeddings(pixel_coords, frame_rate, input_dtype)
+    # Built for the whole sequence; the video self-attention applies it to its rank's query rows
+    self_attention_mask = _guide_attention_mask(self, x, transformer_options, merged_args)
+
     # ===================== SP SPLIT ====================== #
     x, x_orig = pad_group_to_world_size(x, dim=1)
-    context, _ = pad_group_to_world_size(context, dim=1)
+    context, context_orig = pad_group_to_world_size(context, dim=1)
     pe = pad_and_split_pe(pe, dim=1, sp_world_size=sp_world_size, sp_rank=sp_rank)
+    transformer_options = {**transformer_options, SP_LENGTHS_KEY: _sequence_lengths(x_orig, context_orig)}
 
     x = sp_chunk_group(x, sp_world_size, sp_rank, dim=1)
     context = sp_chunk_group(context, sp_world_size, sp_rank, dim=1)
@@ -184,6 +245,8 @@ def usp_dit_forward(
         merged_args["prompt_timestep"] = process_usp_timestep(merged_args["prompt_timestep"], sp_rank, sp_world_size)
 
     # Process transformer blocks
+    if self_attention_mask is not None:
+        merged_args["self_attention_mask"] = self_attention_mask
     x = self._process_transformer_blocks(x, context, attention_mask, timestep, pe, transformer_options=transformer_options, **merged_args)
 
     # ===================== SP GATHER ===================== #
@@ -209,13 +272,29 @@ def usp_cross_attn_forward(self, x, context=None, mask=None, pe=None, k_pe=None,
             q = apply_rotary_emb(q, pe)
             k = apply_rotary_emb(k, pe if k_pe is None else k_pe)
 
-        out = xfuser_optimized_attention(
-            q,
-            k,
-            v,
-            self.heads,
-            attn_precision=self.attn_precision,
-        )
+        kv_length = transformer_options.get(SP_LENGTHS_KEY, {}).get(getattr(self, "raylight_kv_source", None))
+        guide_mask = mask if GuideAttentionMask is not None and isinstance(mask, GuideAttentionMask) else None
+        if kv_length is not None and (guide_mask is not None or kv_length % get_sequence_parallel_world_size() != 0):
+            # The key sequence was zero-padded to split it, and Ulysses attention would attend to the padding, or
+            # guide tokens need their attention weights: keep the queries local and attend to the real keys of every
+            # rank instead.
+            k = get_sp_group().all_gather(k.contiguous(), dim=1).narrow(1, 0, kv_length)
+            v = get_sp_group().all_gather(v.contiguous(), dim=1).narrow(1, 0, kv_length)
+            if guide_mask is not None:
+                out = _guide_attention(q, k, v, self.heads, guide_mask, get_sequence_parallel_rank() * q.shape[1],
+                                       self.attn_precision, transformer_options)
+            else:
+                out = comfy.ldm.modules.attention.optimized_attention(
+                    q, k, v, self.heads, mask=mask, attn_precision=self.attn_precision, transformer_options=transformer_options
+                )
+        else:
+            out = xfuser_optimized_attention(
+                q,
+                k,
+                v,
+                self.heads,
+                attn_precision=self.attn_precision,
+            )
 
     if self.to_gate_logits is not None:
         gate_logits = self.to_gate_logits(x)

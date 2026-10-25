@@ -653,9 +653,10 @@ if hasattr(model_base, "LTXAV"):
 
     @USPInjectRegistry.register(model_base.LTXAV)
     def _inject_ltxvav(model_patcher, base_model, *args):
-        from ..diffusion_models.lightricks.xdit_context_parallel import usp_dit_forward, usp_cross_attn_forward
+        from ..diffusion_models.lightricks.xdit_context_parallel import usp_dit_forward, usp_cross_attn_forward, set_kv_sources
 
         model = base_model.diffusion_model
+        set_kv_sources(model)
         for block in model.transformer_blocks:
             block.attn1.forward = types.MethodType(usp_cross_attn_forward, block.attn1)
             block.audio_attn1.forward = types.MethodType(usp_cross_attn_forward, block.audio_attn1)
@@ -671,9 +672,10 @@ if hasattr(model_base, "LTXV"):
 
     @USPInjectRegistry.register(model_base.LTXV)
     def _inject_ltxv(model_patcher, base_model, *args):
-        from ..diffusion_models.lightricks.xdit_context_parallel import usp_dit_forward, usp_cross_attn_forward
+        from ..diffusion_models.lightricks.xdit_context_parallel import usp_dit_forward, usp_cross_attn_forward, set_kv_sources
 
         model = base_model.diffusion_model
+        set_kv_sources(model)
         for block in model.transformer_blocks:
             block.attn1.forward = types.MethodType(usp_cross_attn_forward, block.attn1)
             block.attn2.forward = types.MethodType(usp_cross_attn_forward, block.attn2)

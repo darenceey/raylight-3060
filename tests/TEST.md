@@ -45,3 +45,13 @@ Output checks:
 - `input_scale_report` must have no `meta`, no `missing`, no `mismatches`
 - `meta_params_after_load` must be empty
 - `mem_*` contains RSS for CPU and RSS + VRAM stats for CUDA
+
+Model parity tests: FSDP, USP and CFG parallel against ComfyUI's own unsharded model, on small random checkpoints
+(CUDA / nccl when there is a card, CPU / gloo otherwise):
+
+```bash
+torchrun --standalone --nproc_per_node=2 custom_nodes/raylight/tests/test_3d_parallel.py     # Hunyuan3D, TRELLIS.2, Pixal3D
+torchrun --standalone --nproc_per_node=2 custom_nodes/raylight/tests/test_ltxav_parallel.py  # LTX-2.3, LTX-2.5
+```
+
+3 ranks give every sequence padding; 4 ranks add USP x CFG.

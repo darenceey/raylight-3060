@@ -16,7 +16,7 @@ import folder_paths
 from .ops import move_patch_to_device
 from .dequant import is_quantized, is_torch_compatible
 
-from raylight.distributed_worker.ray_worker import ensure_fresh_actors
+from raylight.distributed_worker.ray_worker import ensure_fresh_actors, patch_parallelism
 from raylight.comfy_extra_dist.ray_patch_decorator import save_model_state
 
 
@@ -208,7 +208,6 @@ class RayGGUFLoader:
         unet_path = folder_paths.get_full_path_or_raise("unet", unet_name)
 
         loaded_futures = []
-        patched_futures = []
 
         for actor in gpu_actors:
             loaded_futures.append(actor.set_lora_list.remote(lora))
@@ -254,13 +253,8 @@ class RayGGUFLoader:
             ray.get(loaded_futures)
             loaded_futures = []
 
-        for actor in gpu_actors:
-            if parallel_dict["is_xdit"] and not parallel_dict.get("pipefusion_enabled"):
-                patched_futures.append(actor.patch_usp.remote())
-            if parallel_dict.get("pipefusion_enabled"):
-                patched_futures.append(actor.patch_pipefusion.remote())
-
-        ray.get(patched_futures)
+        # The same patches as RayUNETLoader; this loader used to skip CFG parallel, so every CFG rank ran the whole batch
+        patch_parallelism(gpu_actors, parallel_dict)
 
         return (save_model_state(ray_actors, loaded=True),)
 

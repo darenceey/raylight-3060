@@ -171,6 +171,12 @@ def cfg_parallel_forward_wrapper_ltxav(executor, *args, **kwargs):
     )
 ```
 
+LTXV guidance nodes that run an extra pass on the cond alone (Reference Audio, Spatio-Temporal Guidance, Modality
+Guidance) send that cond once per CFG rank under CFG parallel (`_calc_cond_pass` in `comfy_extra_dist/nodes_lt.py`):
+the wrapper needs one batch chunk per rank. `LTXV Dual CFG Guider (Ray)` builds ComfyUI's own guider on the workers.
+With different video and audio scales it always runs cond and uncond together, so it splits like any CFG step; with
+equal scales it is plain CFG, and at 1 / 1 (the distilled models' setting) there is no uncond to split.
+
 ## Usage in Ray Worker
 
 ### Patching CFG

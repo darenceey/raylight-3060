@@ -232,8 +232,9 @@ def usp_dit_forward(
 ):
     # Split x (latent), context (text), and PE
     x, x_orig = pad_group_to_world_size(x, dim=1)
-    context, _ = pad_group_to_world_size(context, dim=1)
-    pe = pad_and_split_pe(pe, dim=2, sp_world_size=sp_world_size, sp_rank=sp_rank)
+    context, context_orig = pad_group_to_world_size(context, dim=1)
+    pe = pad_and_split_pe(pe, dim=1, sp_world_size=sp_world_size, sp_rank=sp_rank)
+    transformer_options = {**transformer_options, SP_LENGTHS_KEY: _sequence_lengths(x_orig, context_orig)}
 
     # Chunk and process
     x = sp_chunk_group(x, sp_world_size, sp_rank, dim=1)
@@ -241,6 +242,19 @@ def usp_dit_forward(
 
     # ...
 ```
+
+The attention runs xFuser's Ulysses attention, which attends to every token of the split sequences, so a zero-padded
+token would become a key. LTXAV splits four of them: video, audio (with the ID-LoRA reference audio prepended), and the
+video and audio text streams; any of them can have a length the GPU count does not divide. `usp_dit_forward` therefore
+puts their unpadded lengths in `transformer_options["raylight_sp_lengths"]`, every attention is tagged with the
+sequence its keys come from (`set_kv_sources`), and an attention whose key sequence was padded gathers the real keys
+and values and runs ComfyUI's attention with its queries local instead (as in *Gathered K/V* below). Sequences the GPU
+count divides keep Ulysses.
+
+Guide attention strength and guide masks (`guide_attention_entries`, from LTXV Add Guide and Add Latent Guide) work the
+same way: `usp_dit_forward` builds ComfyUI's `GuideAttentionMask` for the whole video sequence before the split, and
+the video self-attention gathers the keys and applies the mask to its rank's query rows (`_guide_attention`), split
+into noisy, guide and remaining rows as in ComfyUI so no dense mask is built.
 
 ### Gathered K/V (Qwen Image 2.1, Hunyuan3D, TRELLIS.2)
 

@@ -26,6 +26,7 @@ from comfy import sd, sample, utils  # type: ignore
 from .distributed_worker.ray_worker import (
     make_ray_actor_fn,
     ensure_fresh_actors,
+    patch_parallelism,
     ray_nccl_tester,
 )
 from .distributed_worker.ray_worker_vae import combine_dist_vae_partials, combine_seedvr2_vae_partials
@@ -962,7 +963,6 @@ class RayUNETLoader:
             unet_path = folder_paths.get_full_path_or_raise("checkpoints", unet_name)
 
         loaded_futures = []
-        patched_futures = []
 
         for actor in gpu_actors:
             loaded_futures.append(actor.set_lora_list.remote(lora))
@@ -1051,16 +1051,7 @@ class RayUNETLoader:
             ray.get(loaded_futures)
             loaded_futures = []
 
-        for actor in gpu_actors:
-            if parallel_dict["is_xdit"] and not parallel_dict.get("pipefusion_enabled"):
-                if (parallel_dict["ulysses_degree"]) > 1 or (parallel_dict["ring_degree"] > 1):
-                    patched_futures.append(actor.patch_usp.remote())
-                if parallel_dict["cfg_degree"] > 1:
-                    patched_futures.append(actor.patch_cfg.remote())
-            if parallel_dict.get("pipefusion_enabled"):
-                patched_futures.append(actor.patch_pipefusion.remote())
-
-        ray.get(patched_futures)
+        patch_parallelism(gpu_actors, parallel_dict)
 
         return (save_model_state(ray_actors, loaded=True),)
 

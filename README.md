@@ -9,6 +9,8 @@ Raylight. Using Ray Worker to manage multi GPU sampler setup. With XDiT-XFuser a
 
 <details><summary><strong>Click to expand changelog</strong></summary>
 
+- GGUF models now run CFG parallel: the GGUF loader only patched USP, so every CFG rank sampled the whole batch.
+- LTX-2.3 / LTX-2.5: CFG parallel, and FSDP on current ComfyUI (its fused feed-forward skipped FSDP's weight gather). USP stays exact when a sequence does not divide by the GPU count, as with ID-LoRA reference audio, and applies guide attention strength and guide masks (LTXV Add Guide). New Ray nodes: LTXV Dual CFG Guider, LTXV Spatio-Temporal Guidance, LTXV Modality Guidance and LTXV Duration Predictor; LTXV Reference Audio now also runs under CFG parallel. LTX-2.5 GGUF example workflow.
 - Hunyuan3D 2.0 / 2.1 and TRELLIS.2 / Pixal3D: USP, FSDP and CFG, with example workflows.
 - Ray patch nodes now keep their patches per branch, like a ComfyUI MODEL: each sampler runs the model its own chain of Ray patch nodes produced, also when ComfyUI re-runs only part of a workflow.
 - Prevent materialized view FSDP using direct DTensor class instead of sugarcoated PyTorch handler thanks to https://github.com/StanLukuvka for insight.
@@ -304,9 +306,13 @@ This is experimental mode where all type of parallel group can work at a sime ti
 **LTX-2**
 | Model    | USP | FSDP | CFG |
 |----------|-----|------|-----|
-| LTX-2    | ✅  | ❓   | ❌  |
-| LTX-2.3  | ✅  | ❓   | ❌  |
-| LTX-2.5  | ✅  | ❓   | ❌  |
+| LTX-2    | ✅  | ❓   | ❓  |
+| LTX-2.3  | ✅  | ❓   | ✅  |
+| LTX-2.5  | ✅  | ✅   | ✅  |
+
+- GGUF models (RayGGUFLoader) run USP and CFG; tested with the unsloth LTX-2.3 and LTX-2.5 GGUFs, ID-LoRA and LTXV Reference Audio included.
+- FSDP is tested with the LTX-2.5 int8 checkpoint on 2x 12 GB. Its shards stay on the GPUs after sampling, leaving GPU 0 little room for the VAE and text encoders of this process; on such cards turn on FSDP_CPU_OFFLOAD. LTX-2.3 shares the code but is only checked on small test models (its fp8 checkpoint needs an Ada or newer GPU for FSDP).
+- The distilled models sample at cfg 1, where only USP helps; CFG parallel needs cfg > 1.
 
 
 **ERNIE-Image**

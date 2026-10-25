@@ -290,6 +290,21 @@ def _generate_advanced_noise(add_noise, noise_or_seed, latent):
     return noise_source.generate_noise(latent), noise_source.seed
 
 
+def ltxv_caption_tokens(model, context, unprocessed=False):
+    """The caption tokens an LTXAV model's cross-attention sees, made by its text connectors (LTXV Duration Predictor).
+
+    Returns them on the CPU with the width of the video part. Under FSDP every rank has to run this together.
+    """
+    import comfy.model_management as comfy_model_management
+
+    comfy_model_management.load_models_gpu([model])
+    diffusion_model = model.model.diffusion_model
+    with torch.no_grad():
+        context = context.to(device=model.load_device, dtype=model.model.get_dtype_inference())
+        processed = diffusion_model.preprocess_text_embeds(context, unprocessed=unprocessed)
+    return processed.float().cpu(), diffusion_model.cross_attention_dim
+
+
 def _build_ray_guider(model, guider_spec):
     import math
 
@@ -313,6 +328,15 @@ def _build_ray_guider(model, guider_spec):
         guider = comfy.samplers.CFGGuider(model)
         guider.set_conds(guider_spec["positive"], guider_spec["negative"])
         guider.set_cfg(guider_spec["cfg"])
+        return guider
+
+    if guider_type == "ltxav_dual_cfg":
+        # ComfyUI's own guider: it reads the video/audio split off the nested latent in sample()
+        from comfy_extras.nodes_lt import Guider_LTXAVDualCFG
+
+        guider = Guider_LTXAVDualCFG(model)
+        guider.set_conds(guider_spec["positive"], guider_spec["negative"])
+        guider.set_cfg(guider_spec["video_cfg"], guider_spec["audio_cfg"])
         return guider
 
     ltxv_guider = build_ltxv_ray_guider(model, guider_spec)
@@ -778,6 +802,14 @@ class RayWorker:
 
     def model_function_runner_get_values(self, fn, *args, **kwargs):
         return fn(self.model, *args, **kwargs)
+
+    @patch_temp_fix_ck_ops
+    @patch_enable_comfy_kitchen_fsdp
+    def ltxv_caption_tokens(self, context, unprocessed=False):
+        # the sampler's decorators: quantized FSDP weights need Raylight's comfy-kitchen patches to run
+        if self.parallel_dict["is_fsdp"] is True:
+            self._patch_fsdp_for_sampling()  # the connectors are sharded too; before the first sampler they are not loaded
+        return ltxv_caption_tokens(self.model, context, unprocessed)
 
     def get_local_rank(self):
         return self.local_rank
@@ -1595,3 +1627,17 @@ def ensure_fresh_actors(ray_actors_init):
     parallel_dict = ray.get(gpu_actors[0].get_parallel_dict.remote())
 
     return ray_actors, gpu_actors, parallel_dict
+
+
+def patch_parallelism(gpu_actors, parallel_dict):
+    """Have the workers patch the model they just loaded for the USP, CFG or PipeFusion degrees the initializer set."""
+    futures = []
+    for actor in gpu_actors:
+        if parallel_dict["is_xdit"] and not parallel_dict.get("pipefusion_enabled"):
+            if parallel_dict["ulysses_degree"] > 1 or parallel_dict["ring_degree"] > 1:
+                futures.append(actor.patch_usp.remote())
+            if parallel_dict["cfg_degree"] > 1:
+                futures.append(actor.patch_cfg.remote())
+        if parallel_dict.get("pipefusion_enabled"):
+            futures.append(actor.patch_pipefusion.remote())
+    ray.get(futures)

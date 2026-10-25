@@ -270,6 +270,25 @@ def sync_moe_experts(diffusion_model: torch.nn.Module) -> None:
             module.moe_infer = types.MethodType(_moe_infer_every_expert, module)
 
 
+def _ltx_feed_forward_through_units(self, x):
+    return self.net(x)
+
+
+def call_fused_feed_forwards_through_units(diffusion_model: torch.nn.Module) -> None:
+    """Run LTXV feed-forwards through their sub-modules (LTX-2.x, and their text connectors).
+
+    Their fused path calls net.0.proj and reads net.2's weight without calling net.0 or net, which are FSDP units of
+    their own, so neither would gather its weights. The module path is the same computation.
+    """
+    try:
+        from comfy.ldm.lightricks.model import FeedForward
+    except ImportError:
+        return
+    for module in diffusion_model.modules():
+        if isinstance(module, FeedForward):
+            module.forward = types.MethodType(_ltx_feed_forward_through_units, module)
+
+
 def _collect_controlnet_shared_modules(diffusion_model: torch.nn.Module) -> set[torch.nn.Module]:
     """Collect base model sub-modules that ControlNet calls directly.
 
@@ -414,6 +433,7 @@ def patch_fsdp(self):
         _pre_init_fsdp(diffusion_model)
     disable_prefix_cache(diffusion_model)
     sync_moe_experts(diffusion_model)
+    call_fused_feed_forwards_through_units(diffusion_model)
     self.fsdp_state_dict = None
 
     print("FSDP registered successfully.")

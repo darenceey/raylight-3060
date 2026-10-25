@@ -242,6 +242,15 @@ def freeze_and_detect_qt(model):
 parallel_dict["fsdp_cpu_offload"] = True
 ```
 
+### VAE or text encoder fails on GPU 0 after an FSDP sampler ("weight type (CPUBFloat16Type)")
+
+**Cause**: FSDP shards stay on the GPUs between nodes; `clear_vram_after_sampling` does not free them. When a shard nearly
+fills the card (LTX-2.5 int8 on 2x 12 GB: about 10.5 GB each), ComfyUI's own VAE and text encoders on GPU 0 have no
+room left, and the VAE fails with `Input type (CUDABFloat16Type) and weight type (CPUBFloat16Type) should be the same`.
+
+**Solution**: Turn on `FSDP_CPU_OFFLOAD`: the shards wait in system RAM and only the layer being run is gathered on
+the GPU.
+
 ### NCCL hang or garbled output with one model only
 
 **Cause**: The model's forward takes a different path on some rank, for example a cache that each GPU turns on or off from its own free VRAM. The ranks then call a different sequence of FSDP-wrapped modules and their per-module all-gathers stop pairing up.
@@ -249,6 +258,18 @@ parallel_dict["fsdp_cpu_offload"] = True
 **Solution**: Make the choice identical on every rank. Qwen Image 2.1's prefix K/V cache is switched off under FSDP for this reason (`disable_prefix_cache` in `comfy_dist/model_patcher.py`).
 
 A mixture of experts is the same problem: every expert is its own FSDP unit, and ranks holding different tokens (USP shards, CFG cond and uncond) route them to different experts. Hunyuan3D 2.1's MoE blocks run every expert on every rank under FSDP, with no tokens where none were routed (`sync_moe_experts` in `comfy_dist/model_patcher.py`).
+
+### "got mixed torch.Tensor and DTensor" in a model's forward
+
+**Cause**: The forward reads the weight of a module that is an FSDP unit of its own without calling that module, so
+FSDP never gathers it. Raylight makes the parent of each leaf layer a unit, and ComfyUI's fused paths sometimes reach
+past it: LTX-2.x's `FeedForward` calls `net.0.proj` and hands `net.2`'s weight to `comfy.ops.linear_input_act`, but
+calls neither `net.0` nor `net`.
+
+**Solution**: Route such modules through their sub-modules' forwards under FSDP. `patch_fsdp` does this for LTXV
+feed-forwards (`call_fused_feed_forwards_through_units` in `comfy_dist/model_patcher.py`); the computation is the
+same. A fused call on the module's own children is fine (Wan, Qwen Image 2.1, MiniMax): calling the module gathers
+them.
 
 ### "Cannot copy out of meta tensor" in a model's forward
 
