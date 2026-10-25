@@ -248,6 +248,14 @@ parallel_dict["fsdp_cpu_offload"] = True
 
 **Solution**: Make the choice identical on every rank. Qwen Image 2.1's prefix K/V cache is switched off under FSDP for this reason (`disable_prefix_cache` in `comfy_dist/model_patcher.py`).
 
+A mixture of experts is the same problem: every expert is its own FSDP unit, and ranks holding different tokens (USP shards, CFG cond and uncond) route them to different experts. Hunyuan3D 2.1's MoE blocks run every expert on every rank under FSDP, with no tokens where none were routed (`sync_moe_experts` in `comfy_dist/model_patcher.py`).
+
+### "Cannot copy out of meta tensor" in a model's forward
+
+**Cause**: A non-persistent buffer (built in `__init__`, not saved in the checkpoint) stayed on the meta device. The FSDP loader moves the model to meta, and neither the checkpoint nor the FSDP state dict brings such a buffer back.
+
+**Solution**: `fsdp_load_diffusion_model` snapshots them before the meta move (`FSDPModelPatcher.fsdp_buffers`) and `patch_fsdp` restores them after loading. TRELLIS.2's structure RoPE phases and Hunyuan3D 2.1's timestep frequencies are such buffers.
+
 ## See Also
 
 - **[1-intro.md](1-intro.md)** - Overview
@@ -256,5 +264,5 @@ parallel_dict["fsdp_cpu_offload"] = True
 
 ---
 
-*Last updated: 2026-10-24*
+*Last updated: 2026-10-25*
 

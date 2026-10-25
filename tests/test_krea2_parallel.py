@@ -89,6 +89,22 @@ def test_hunyuan3d_forward_signature_matches_usp_forward():
     )
 
 
+def test_hunyuan3d21_and_trellis2_forwards_match_their_usp_and_cfg_forwards():
+    hunyuandit = ROOT / "comfy/ldm/hunyuan3dv2_1/hunyuandit.py"
+    trellis2 = ROOT / "comfy/ldm/trellis2/model.py"
+    for core_path, core_class, raylight_file, raylight_name in (
+        (hunyuandit, "HunYuanDiTPlain", "hunyuan3dv2_1/xdit_context_parallel.py", "usp_dit_forward"),
+        (hunyuandit, "HunYuanDiTPlain", "hunyuan3dv2_1/xdit_cfg_parallel.py", "cfg_parallel_forward"),
+        (hunyuandit, "Attention", "hunyuan3dv2_1/xdit_context_parallel.py", "usp_attention_forward"),
+        (trellis2, "Trellis2", "trellis2/xdit_cfg_parallel.py", "cfg_parallel_forward"),
+        (trellis2, "SLatFlowModel", "trellis2/xdit_context_parallel.py", "usp_slat_forward"),
+        (trellis2, "SparseStructureFlowModel", "trellis2/xdit_context_parallel.py", "usp_ss_forward"),
+        (trellis2, "SparseMultiHeadAttention", "trellis2/xdit_context_parallel.py", "usp_sparse_self_attn_forward"),
+        (trellis2, "MultiHeadAttention", "trellis2/xdit_context_parallel.py", "usp_dense_self_attn_forward"),
+    ):
+        _assert_matching_signatures(core_path, "forward", RAYLIGHT / "diffusion_models" / raylight_file, raylight_name, core_class)
+
+
 def test_chroma_single_stream_signature_matches_flux_block():
     _assert_matching_signatures(
         ROOT / "comfy/ldm/flux/layers.py",

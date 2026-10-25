@@ -2,6 +2,7 @@ import math
 import re
 
 import comfy.model_patcher
+import comfy.patcher_extension
 import comfy.samplers
 import torch
 from comfy.k_diffusion.sampling import sigma_to_half_log_snr
@@ -548,6 +549,48 @@ class RayNAGuidance:
         return m
 
 
+class RayCFGOverride:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "ray_actors": ("RAY_ACTORS",),
+                "cfg": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step": 0.1, "round": 0.01}),
+                "start_percent": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001}),
+                "end_percent": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.001}),
+            }
+        }
+
+    RETURN_TYPES = ("RAY_ACTORS",)
+    RETURN_NAMES = ("ray_actors",)
+    FUNCTION = "patch"
+    CATEGORY = "Raylight/extra/guidance"
+    DESCRIPTION = ("Override cfg to a fixed value over a [start, end] percent (sigma) range. "
+                   "With multiple overrides, the one nearest the sampler wins on overlap.")
+
+    @ray_patch
+    def patch(self, model, cfg, start_percent, end_percent):
+        ms = model.get_model_object("model_sampling")
+        sigma_hi = ms.percent_to_sigma(start_percent)
+        sigma_lo = ms.percent_to_sigma(end_percent)
+
+        def predict_noise_wrapper(executor, *args, **kwargs):
+            sigma = float(args[1].flatten()[0])
+            if not (sigma_lo <= sigma <= sigma_hi):
+                return executor(*args, **kwargs)
+            guider = executor.class_obj
+            saved = guider.cfg
+            guider.cfg = cfg
+            try:
+                return executor(*args, **kwargs)
+            finally:
+                guider.cfg = saved
+
+        m = model.clone()
+        m.add_wrapper(comfy.patcher_extension.WrappersMP.PREDICT_NOISE, predict_noise_wrapper)
+        return m
+
+
 NODE_CLASS_MAPPINGS = {
     "RayCFGZeroStar": RayCFGZeroStar,
     "RayCFGNorm": RayCFGNorm,
@@ -562,6 +605,7 @@ NODE_CLASS_MAPPINGS = {
     "RaySkipLayerGuidanceDiT": RaySkipLayerGuidanceDiT,
     "RaySkipLayerGuidanceDiTSimple": RaySkipLayerGuidanceDiTSimple,
     "RayNAGuidance": RayNAGuidance,
+    "RayCFGOverride": RayCFGOverride,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -578,4 +622,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "RaySkipLayerGuidanceDiT": "SkipLayerGuidanceDiT (Ray)",
     "RaySkipLayerGuidanceDiTSimple": "SkipLayerGuidanceDiTSimple (Ray)",
     "RayNAGuidance": "Normalized Attention Guidance (Ray)",
+    "RayCFGOverride": "CFG Override (Ray)",
 }

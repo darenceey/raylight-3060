@@ -349,19 +349,36 @@ if hasattr(model_base, "Flux"):
 
 if hasattr(model_base, "Hunyuan3Dv2"):
 
-    @USPInjectRegistry.register(model_base.Hunyuan3Dv2)
+    @USPInjectRegistry.register(model_base.Hunyuan3Dv2)  # Hunyuan3D 2.0 and 2.0 mini
     def _inject_hunyuan_3dv2(model_patcher, base_model, *args):
-        from ..diffusion_models.hunyuan3d.xdit_context_parallel import (
-            usp_dit_forward,
-        )
-        from ..diffusion_models.flux.xdit_context_parallel import usp_single_stream_forward, usp_double_stream_forward
+        from ..diffusion_models.hunyuan3d.xdit_context_parallel import usp_dit_forward
+
+        # The native double/single blocks stay; usp_dit_forward hands them the gathered K/V through an attn1 patch
+        model = base_model.diffusion_model
+        model._forward = types.MethodType(usp_dit_forward, model)
+
+
+if hasattr(model_base, "Hunyuan3Dv2_1"):
+
+    @USPInjectRegistry.register(model_base.Hunyuan3Dv2_1)
+    def _inject_hunyuan_3dv2_1(model_patcher, base_model, *args):
+        from ..diffusion_models.hunyuan3dv2_1.xdit_context_parallel import usp_attention_forward, usp_dit_forward
 
         model = base_model.diffusion_model
-        for block in model.double_blocks:
-            block.forward = types.MethodType(usp_double_stream_forward, block)
-        for block in model.single_blocks:
-            block.forward = types.MethodType(usp_single_stream_forward, block)
-        model._forward = types.MethodType(usp_dit_forward, model)
+        model.raylight_sp_state = {}
+        for block in model.blocks:
+            block.attn1.raylight_sp_state = model.raylight_sp_state
+            block.attn1.forward = types.MethodType(usp_attention_forward, block.attn1)
+        model.forward = types.MethodType(usp_dit_forward, model)
+
+
+if hasattr(model_base, "Trellis2"):
+
+    @USPInjectRegistry.register(model_base.Trellis2)  # TRELLIS.2 and Pixal3D
+    def _inject_trellis2(model_patcher, base_model, *args):
+        from ..diffusion_models.trellis2.xdit_context_parallel import inject_usp
+
+        inject_usp(base_model.diffusion_model)
 
 
 if hasattr(model_base, "HunyuanVideo"):

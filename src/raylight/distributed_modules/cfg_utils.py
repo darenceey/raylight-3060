@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import types
 
 import torch
 from comfy.nested_tensor import NestedTensor
@@ -157,3 +158,44 @@ def cfg_parallel_forward(
 
     result = executor(*bound.args, **bound.kwargs)
     return _gather_value(result)
+
+
+# Direct CFG handlers, for models whose forward does not run the DIFFUSION_MODEL wrappers
+
+
+def direct_cfg_split(transformer_options):
+    """Return (cfg_rank, cfg_world_size, rank's transformer_options) when this call holds one cond/uncond chunk per CFG rank.
+
+    Returns None otherwise: cfg 1.0, a CFG Override range, or ComfyUI running cond and uncond as separate calls. Such a
+    call runs whole on every CFG rank instead of raising, so one workflow can mix guided and unguided samplers on the
+    same workers.
+    """
+    cfg_world_size = get_classifier_free_guidance_world_size()
+    cond_or_uncond = transformer_options.get("cond_or_uncond")
+    if cond_or_uncond is None or len(cond_or_uncond) != cfg_world_size:
+        return None
+    cfg_rank = get_classifier_free_guidance_rank()
+    options = dict(transformer_options)
+    for key in ("cond_or_uncond", "uuids"):
+        value = options.get(key)
+        if isinstance(value, list) and len(value) == cfg_world_size:
+            options[key] = value[cfg_rank:cfg_rank + 1]
+    return cfg_rank, cfg_world_size, options
+
+
+def chunk_cfg_batch(value, cfg_world_size, cfg_rank):
+    # ComfyUI stacks one equally sized chunk per cond_or_uncond entry, so the rank's part is a plain chunk of the batch
+    if not isinstance(value, torch.Tensor) or value.ndim == 0:
+        return value
+    return torch.chunk(value, cfg_world_size, dim=0)[cfg_rank]
+
+
+def gather_cfg_batch(value):
+    return get_cfg_group().all_gather(value.contiguous(), dim=0)
+
+
+def patch_direct_cfg_forward(model, cfg_forward):
+    if getattr(model.forward, "__func__", None) is cfg_forward:
+        return
+    model._raylight_cfg_original_forward = model.forward
+    model.forward = types.MethodType(cfg_forward, model)

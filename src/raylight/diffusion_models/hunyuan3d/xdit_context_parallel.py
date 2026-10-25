@@ -1,42 +1,28 @@
-import math
 import torch
-from torch import Tensor
 
-from xfuser.core.distributed import (
-    get_sequence_parallel_rank,
-    get_sequence_parallel_world_size,
-    get_sp_group,
-)
-import raylight.distributed_modules.attention as xfuser_attn
-from ..utils import pad_to_world_size
+from comfy.ldm.flux.layers import timestep_embedding
 
-attn_type = xfuser_attn.get_attn_type()
-sync_ulysses = xfuser_attn.get_sync_ulysses()
-xfuser_optimized_attention = xfuser_attn.make_xfuser_attention(attn_type, sync_ulysses)
+from ..utils import gather_sequence, shard_sequence
 
-# HunyuanVid use the same DiT single/double block as Flux
+# Hunyuan3D 2.0 runs ComfyUI's own Flux double/single blocks. Each rank holds a shard of the text and latent tokens, and
+# the attn1 patch below hands every block the K/V of the whole sequence while its queries stay local.
+
+SP_LENGTHS_KEY = "raylight_sp_lengths"
 
 
-def timestep_embedding(t: Tensor, dim, max_period=10000, time_factor: float = 1000.0):
-    """
-    Create sinusoidal timestep embeddings.
-    :param t: a 1-D Tensor of N indices, one per batch element.
-                      These may be fractional.
-    :param dim: the dimension of the output.
-    :param max_period: controls the minimum frequency of the embeddings.
-    :return: an (N, D) Tensor of positional embeddings.
-    """
-    t = time_factor * t
-    half = dim // 2
-    freqs = torch.exp(-math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32, device=t.device) / half)
+def _gather_kv(q, k, v, pe=None, attn_mask=None, extra_options={}):
+    lengths = extra_options[SP_LENGTHS_KEY]
+    if len(lengths) == 1:
+        return {"k": gather_sequence(k, lengths[0], dim=2), "v": gather_sequence(v, lengths[0], dim=2)}
 
-    args = t[:, None].float() * freqs[None]
-    embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
-    if dim % 2:
-        embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
-    if torch.is_floating_point(t):
-        embedding = embedding.to(t)
-    return embedding
+    # Double blocks attend over [txt shard, img shard]; the two streams were padded and split separately.
+    txt_local = extra_options["img_slice"][0]
+    txt_len, img_len = lengths
+
+    def gather(t):
+        return torch.cat((gather_sequence(t[:, :, :txt_local], txt_len, dim=2), gather_sequence(t[:, :, txt_local:], img_len, dim=2)), dim=2)
+
+    return {"k": gather(k), "v": gather(v)}
 
 
 def usp_dit_forward(self, x, timestep, context, guidance=None, transformer_options={}, **kwargs):
@@ -54,77 +40,82 @@ def usp_dit_forward(self, x, timestep, context, guidance=None, transformer_optio
     pe = None
     attn_mask = None
 
-    # ===================== SP SPLIT ====================== #
-    img, img_orig_size = pad_to_world_size(img, dim=1)
-    txt, txt_orig_size = pad_to_world_size(txt, dim=1)
-    sp_world = get_sequence_parallel_world_size()
-    sp_rank = get_sequence_parallel_rank()
+    transformer_options = transformer_options.copy()
+    patches = dict(transformer_options.get("patches", {}))
+    # Last, so every other attn1 patch still sees this rank's own tokens
+    patches["attn1_patch"] = [*patches.get("attn1_patch", []), _gather_kv]
+    transformer_options["patches"] = patches
 
-    img = torch.chunk(img, sp_world, dim=1)[sp_rank]
-    txt = torch.chunk(txt, sp_world, dim=1)[sp_rank]
+    # ===================== SP SPLIT ====================== #
+    img, img_len = shard_sequence(img, dim=1)
+    txt, txt_len = shard_sequence(txt, dim=1)
+    transformer_options[SP_LENGTHS_KEY] = (txt_len, img_len)
 
     patches_replace = transformer_options.get("patches_replace", {})
     blocks_replace = patches_replace.get("dit", {})
     for i, block in enumerate(self.double_blocks):
         if ("double_block", i) in blocks_replace:
-
             def block_wrap(args):
                 out = {}
-                out["img"], out["txt"] = block(
-                    img=args["img"],
-                    txt=args["txt"],
-                    vec=args["vec"],
-                    pe=args["pe"],
-                    attn_mask=args.get("attn_mask"),
-                    transformer_options=args["transformer_options"],
-                )
+                out["img"], out["txt"] = block(img=args["img"],
+                                               txt=args["txt"],
+                                               vec=args["vec"],
+                                               pe=args["pe"],
+                                               attn_mask=args.get("attn_mask"),
+                                               transformer_options=args["transformer_options"])
                 return out
 
-            out = blocks_replace[("double_block", i)](
-                {"img": img, "txt": txt, "vec": vec, "pe": pe, "attn_mask": attn_mask, "transformer_options": transformer_options},
-                {"original_block": block_wrap},
-            )
+            out = blocks_replace[("double_block", i)]({"img": img,
+                                                       "txt": txt,
+                                                       "vec": vec,
+                                                       "pe": pe,
+                                                       "attn_mask": attn_mask,
+                                                       "transformer_options": transformer_options},
+                                                      {"original_block": block_wrap})
             txt = out["txt"]
             img = out["img"]
         else:
-            img, txt = block(img=img, txt=txt, vec=vec, pe=pe, attn_mask=attn_mask, transformer_options=transformer_options)
+            img, txt = block(img=img,
+                             txt=txt,
+                             vec=vec,
+                             pe=pe,
+                             attn_mask=attn_mask,
+                             transformer_options=transformer_options)
 
     # ===================== SP GATHER ===================== #
-    img = get_sp_group().all_gather(img, dim=1)
-    txt = get_sp_group().all_gather(txt, dim=1)
-    img = img[:, :img_orig_size, ...]
-    txt = txt[:, :txt_orig_size, ...]
+    img = gather_sequence(img, img_len, dim=1)
+    txt = gather_sequence(txt, txt_len, dim=1)
 
     img = torch.cat((txt, img), 1)
-    # ===================== SP SPLIT ====================== #
 
-    img, joint_orig_size = pad_to_world_size(img, dim=1)
-    img = torch.chunk(img, sp_world, dim=1)[sp_rank]
+    # ===================== SP SPLIT ====================== #
+    img, joint_len = shard_sequence(img, dim=1)
+    transformer_options[SP_LENGTHS_KEY] = (joint_len,)
 
     for i, block in enumerate(self.single_blocks):
         if ("single_block", i) in blocks_replace:
-
             def block_wrap(args):
                 out = {}
-                out["img"] = block(
-                    args["img"],
-                    vec=args["vec"],
-                    pe=args["pe"],
-                    attn_mask=args.get("attn_mask"),
-                    transformer_options=args["transformer_options"],
-                )
+                out["img"] = block(args["img"],
+                                   vec=args["vec"],
+                                   pe=args["pe"],
+                                   attn_mask=args.get("attn_mask"),
+                                   transformer_options=args["transformer_options"])
                 return out
 
-            out = blocks_replace[("single_block", i)](
-                {"img": img, "vec": vec, "pe": pe, "attn_mask": attn_mask, "transformer_options": transformer_options},
-                {"original_block": block_wrap},
-            )
+            out = blocks_replace[("single_block", i)]({"img": img,
+                                                       "vec": vec,
+                                                       "pe": pe,
+                                                       "attn_mask": attn_mask,
+                                                       "transformer_options": transformer_options},
+                                                      {"original_block": block_wrap})
             img = out["img"]
         else:
             img = block(img, vec=vec, pe=pe, attn_mask=attn_mask, transformer_options=transformer_options)
+
     # ===================== SP GATHER ===================== #
-    img = get_sp_group().all_gather(img, dim=1)
-    img = img[:, :joint_orig_size, ...]
-    img = img[:, txt_orig_size:, ...]
+    img = gather_sequence(img, joint_len, dim=1)
+
+    img = img[:, txt_len:, ...]
     img = self.final_layer(img, vec)
     return img.movedim(-2, -1) * (-1.0)

@@ -17,6 +17,7 @@ from .ops import move_patch_to_device
 from .dequant import is_quantized, is_torch_compatible
 
 from raylight.distributed_worker.ray_worker import ensure_fresh_actors
+from raylight.comfy_extra_dist.ray_patch_decorator import save_model_state
 
 
 def update_folder_names_and_paths(key, targets=[]):
@@ -261,7 +262,7 @@ class RayGGUFLoader:
 
         ray.get(patched_futures)
 
-        return (ray_actors,)
+        return (save_model_state(ray_actors, loaded=True),)
 
 
 NODE_CLASS_MAPPINGS = {

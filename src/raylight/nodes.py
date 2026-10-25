@@ -29,7 +29,8 @@ from .distributed_worker.ray_worker import (
     ray_nccl_tester,
 )
 from .distributed_worker.ray_worker_vae import combine_dist_vae_partials, combine_seedvr2_vae_partials
-from .comfy_extra_dist.nodes_custom_sampler import _free_host_models_if_contended
+from .comfy_extra_dist.nodes_custom_sampler import _free_host_models_if_contended, strip_host_only_conds
+from .comfy_extra_dist.ray_patch_decorator import save_model_state, use_model_state
 
 
 class AnyType(str):
@@ -985,7 +986,8 @@ class RayUNETLoader:
             if parallel_dict["is_quant"] is False:
                 already_loaded = ray.get(gpu_actors[0].check_model_loaded.remote(unet_path, model_options))
                 if already_loaded:
-                    return (ray_actors,)
+                    ray.get([actor.reset_to_loaded_model.remote() for actor in gpu_actors])
+                    return (save_model_state(ray_actors, loaded=True),)
 
             if num_replicas <= 1:
                 # Single replica — all GPUs share one FSDP-sharded model
@@ -1060,7 +1062,7 @@ class RayUNETLoader:
 
         ray.get(patched_futures)
 
-        return (ray_actors,)
+        return (save_model_state(ray_actors, loaded=True),)
 
 
 class RayLoraLoader:
@@ -1191,6 +1193,7 @@ class XFuserKSamplerAdvanced:
         if add_noise == "disable":
             disable_noise = True
 
+        use_model_state(ray_actors)
         gpu_actors = ray_actors["workers"]
         futures = [
             actor.common_ksampler.remote(
@@ -1199,8 +1202,8 @@ class XFuserKSamplerAdvanced:
                 cfg,
                 sampler_name,
                 scheduler,
-                positive,
-                negative,
+                strip_host_only_conds(positive),
+                strip_host_only_conds(negative),
                 latent_image,
                 denoise=denoise,
                 disable_noise=disable_noise,
@@ -1304,6 +1307,7 @@ class UnifiedParallelSampler:
         if add_noise == "disable":
             disable_noise = True
 
+        use_model_state(ray_actors)
         gpu_actors = ray_actors["workers"]
         parallel_dict = ray.get(gpu_actors[0].get_parallel_dict.remote())
         group_infos = ray.get([actor.get_exec_group_info.remote() for actor in gpu_actors])
@@ -1320,8 +1324,8 @@ class UnifiedParallelSampler:
                 cfg,
                 sampler_name,
                 scheduler,
-                positive[group_info["dp_rank"]],
-                negative[group_info["dp_rank"]],
+                strip_host_only_conds(positive[group_info["dp_rank"]]),
+                strip_host_only_conds(negative[group_info["dp_rank"]]),
                 latent_image[group_info["dp_rank"]],
                 denoise=denoise,
                 disable_noise=disable_noise,
@@ -1412,6 +1416,7 @@ class DPKSamplerAdvanced:
         return_with_leftover_noise = return_with_leftover_noise[0]
         denoise = denoise[0]
 
+        use_model_state(ray_actors)
         gpu_actors = ray_actors["workers"]
         parallel_dict = ray.get(gpu_actors[0].get_parallel_dict.remote())
         if parallel_dict["is_xdit"] is True:
@@ -1457,8 +1462,8 @@ class DPKSamplerAdvanced:
                 cfg,
                 sampler_name,
                 scheduler,
-                positive[i],
-                negative[i],
+                strip_host_only_conds(positive[i]),
+                strip_host_only_conds(negative[i]),
                 latent_image[i],
                 denoise=denoise,
                 disable_noise=disable_noise,

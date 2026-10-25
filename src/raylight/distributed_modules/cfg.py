@@ -62,6 +62,25 @@ if hasattr(model_base, "LingBotVideo"):
         patch_cfg_forward(base_model.diffusion_model)
 
 
+# Their forwards skip the DIFFUSION_MODEL wrappers, so a wrapper registered below would never run
+if hasattr(model_base, "Hunyuan3Dv2_1"):
+
+    @CFGParallelInjectRegistry.register_direct(model_base.Hunyuan3Dv2_1)
+    def _inject_hunyuan_3dv2_1(model_patcher, base_model, *args):
+        from ..diffusion_models.hunyuan3dv2_1.xdit_cfg_parallel import patch_cfg_forward
+
+        patch_cfg_forward(base_model.diffusion_model)
+
+
+if hasattr(model_base, "Trellis2"):
+
+    @CFGParallelInjectRegistry.register_direct(model_base.Trellis2)
+    def _inject_trellis2(model_patcher, base_model, *args):
+        from ..diffusion_models.trellis2.xdit_cfg_parallel import patch_cfg_forward
+
+        patch_cfg_forward(base_model.diffusion_model)
+
+
 if hasattr(model_base, "WAN22_WanDancer"):
 
     @CFGParallelInjectRegistry.register(model_base.WAN22_WanDancer)
@@ -166,15 +185,6 @@ if hasattr(model_base, "Hunyuan3Dv2"):
 
     @CFGParallelInjectRegistry.register(model_base.Hunyuan3Dv2)
     def _inject_hunyuan_3dv2():
-        from ..diffusion_models.hunyuan3d.xdit_cfg_parallel import cfg_parallel_forward_wrapper
-
-        return cfg_parallel_forward_wrapper
-
-
-if hasattr(model_base, "Hunyuan3Dv2_1"):
-
-    @CFGParallelInjectRegistry.register(model_base.Hunyuan3Dv2_1)
-    def _inject_hunyuan_3dv2_1():
         from ..diffusion_models.hunyuan3d.xdit_cfg_parallel import cfg_parallel_forward_wrapper
 
         return cfg_parallel_forward_wrapper

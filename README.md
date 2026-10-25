@@ -9,6 +9,8 @@ Raylight. Using Ray Worker to manage multi GPU sampler setup. With XDiT-XFuser a
 
 <details><summary><strong>Click to expand changelog</strong></summary>
 
+- Hunyuan3D 2.0 / 2.1 and TRELLIS.2 / Pixal3D: USP, FSDP and CFG, with example workflows.
+- Ray patch nodes now keep their patches per branch, like a ComfyUI MODEL: each sampler runs the model its own chain of Ray patch nodes produced, also when ComfyUI re-runs only part of a workflow.
 - Prevent materialized view FSDP using direct DTensor class instead of sugarcoated PyTorch handler thanks to https://github.com/StanLukuvka for insight.
 - **BETA** Qwen 2.1 Image USP.
 - Fix bug with PDD Lora Minimax.
@@ -327,6 +329,20 @@ This is experimental mode where all type of parallel group can work at a sime ti
 | H3 FL2VA           | ✅  | ✅   | ❌  |
 
 
+**Hunyuan3D**
+| Model                   | USP | FSDP | CFG |
+|-------------------------|-----|------|-----|
+| Hunyuan3D 2.0 / 2.0 mini | ✅  | ✅   | ✅  |
+| Hunyuan3D 2.1           | ✅  | ✅   | ✅  |
+
+
+**TRELLIS.2**
+| Model      | USP | FSDP | CFG |
+|------------|-----|------|-----|
+| TRELLIS.2  | ✅  | ✅   | ✅  |
+| Pixal3D    | ✅  | ✅   | ✅  |
+
+
 **UNet**
 | Model  | USP | FSDP | CFG |
 |--------|-----|------|-----|
@@ -350,6 +366,10 @@ This is experimental mode where all type of parallel group can work at a sime ti
 - CFG parallel for Qwen Image 2.1 needs the positive and negative prompts to encode to the same length
   (a zeroed-out negative, for example); otherwise ComfyUI samples them as separate batches and there is
   nothing to split.
+- Hunyuan3D 2.1 and TRELLIS.2 under CFG parallel run their unguided steps (cfg 1.0, CFG Override ranges,
+  TRELLIS.2's texture stage) whole on every CFG GPU, so one workflow can mix guided and unguided samplers.
+- Qwen Image 2.1, Hunyuan3D and TRELLIS.2 run USP with ComfyUI's own attention against K/V gathered from every GPU,
+  which is exact for any sequence length; the `XFuser_attention` setting does not apply to them.
 - Chroma and Hunyuan Video ControlNet support is implemented in the USP/FSDP code paths
   but no ControlNet model weights are currently available in ComfyUI to test with.
 - Only one ControlNet model per workflow is supported. To apply the same model with

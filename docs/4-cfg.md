@@ -131,6 +131,20 @@ def cfg_parallel_forward_wrapper(executor, *args, **kwargs):
     )
 ```
 
+### Direct Handlers
+
+**Location**: `distributed_modules/cfg.py` (`register_direct`), `distributed_modules/cfg_utils.py` (`direct_cfg_split`)
+
+The wrapper above only runs if the model's forward goes through ComfyUI's `DIFFUSION_MODEL` wrappers. LingBot Video,
+Hunyuan3D 2.1 and TRELLIS.2 call their forward directly, so their handler replaces `diffusion_model.forward` from an
+`ON_LOAD` callback instead (after USP's, which may have replaced it first).
+
+The Hunyuan3D 2.1 and TRELLIS.2 handlers split the batch by `transformer_options["cond_or_uncond"]`: one chunk per CFG
+rank, any number of latents per chunk. A call without one chunk per CFG rank - cfg 1.0, a CFG Override range,
+TRELLIS.2's texture stage, or ComfyUI running cond and uncond separately - runs whole on every CFG rank instead of
+raising, so a workflow can mix guided and unguided samplers on the same workers. The rank's `cond_or_uncond` entry is
+passed on, which TRELLIS.2 needs to zero Pixal3D's projected features for the uncond pass.
+
 ### LTXV/LTXAV Specific
 
 **Location**: `diffusion_models/lightricks/xdit_cfg_parallel.py`
@@ -265,4 +279,4 @@ chunk_names=("x", "timestep", "context", "attention_mask", "keyframe_idxs", "den
 
 ---
 
-*Last updated: 2026-04-11*
+*Last updated: 2026-10-25*

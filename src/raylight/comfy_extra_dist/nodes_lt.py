@@ -8,7 +8,7 @@ import torchaudio
 
 from xfuser.core.distributed import get_classifier_free_guidance_world_size
 
-from .ray_patch_decorator import ray_patch
+from .ray_patch_decorator import ray_patch, save_model_state, use_model_state
 
 
 def _get_cfg_world_size():
@@ -162,6 +162,7 @@ class RayLTXVReferenceAudio:
         positive = node_helpers.conditioning_set_values(positive, {"ref_audio": ref_audio})
         negative = node_helpers.conditioning_set_values(negative, {"ref_audio": ref_audio})
 
+        use_model_state(ray_actors)
         gpu_workers = ray_actors["workers"]
         futures = [
             actor.model_function_runner.remote(
@@ -174,7 +175,7 @@ class RayLTXVReferenceAudio:
         ]
         ray.get(futures)
 
-        return (ray_actors, positive, negative)
+        return (save_model_state(ray_actors), positive, negative)
 
 
 NODE_CLASS_MAPPINGS = {

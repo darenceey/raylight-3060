@@ -157,6 +157,31 @@ flowchart TD
     style F fill:#e8f5e9
 ```
 
+### Ray Patch Nodes and RAY_ACTORS
+
+**Location**: `comfy_extra_dist/ray_patch_decorator.py`
+
+Each worker holds one model, and a Ray patch node (`@ray_patch`: ModelSamplingSD3, RescaleCFG, CFG Override, ...)
+replaces it with a patched clone. So that a `RAY_ACTORS` value behaves like a ComfyUI `MODEL`, it names the model its
+node produced:
+
+- loaders and patch nodes call `save_model_state`: the workers keep their current model under a new token, and the
+  node returns `ray_actors` with that token under `model_state`;
+- patch nodes and samplers call `use_model_state` first, which puts the workers back on the model their input names.
+
+A sampler therefore runs with the patches of its own chain, also when ComfyUI reuses cached patch nodes on a re-run or
+runs another branch's patches in between - for example per-stage settings like the TRELLIS.2 template's. A worker
+drops its saved models when it loads another one; a value whose model is gone falls back to the workers' current model
+with a warning, as does a value without a token. A node that changes the worker model outside `@ray_patch` should do
+the same two calls.
+
+### Conditioning Sent to Workers
+
+Every Ray sampler and guider ships its conditioning to each worker, on every call. `strip_host_only_conds`
+(`comfy_extra_dist/nodes_custom_sampler.py`) drops entries only host-side nodes read first: Pixal3D's
+`proj_feat_pack`, the DINOv3 feature maps of all stages, which made each TRELLIS.2 sampler call about 45 s slower on
+two PCIe GPUs. Add a key to `_HOST_ONLY_COND_KEYS` when a model's stage nodes leave similar data in the conditioning.
+
 ## Contributing
 
 To add support for a new model:
@@ -169,4 +194,4 @@ See individual documentation files for detailed implementation guides.
 
 ---
 
-*Last updated: 2026-04-11*
+*Last updated: 2026-10-25*

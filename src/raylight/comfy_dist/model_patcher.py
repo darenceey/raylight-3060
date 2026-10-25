@@ -3,6 +3,7 @@ from __future__ import annotations
 import collections
 import logging
 import gc
+import types
 from contextlib import nullcontext
 from typing import TYPE_CHECKING
 
@@ -221,6 +222,54 @@ def disable_prefix_cache(diffusion_model: torch.nn.Module) -> None:
     reset(False)
 
 
+def collect_non_persistent_buffers(module: torch.nn.Module) -> dict[str, torch.Tensor]:
+    """Snapshot the buffers a state dict leaves out, before the model goes to meta for FSDP.
+
+    Models build some constants in __init__ as non-persistent buffers (TRELLIS.2's structure RoPE phases, Hunyuan3D
+    2.1's timestep frequencies). Neither the checkpoint nor the FSDP state dict brings them back from meta.
+    """
+    buffers = {}
+    for name, submodule in module.named_modules():
+        for buffer_name in submodule._non_persistent_buffers_set:
+            buffer = submodule._buffers.get(buffer_name)
+            if buffer is not None and buffer.device.type != "meta":
+                buffers[f"{name}.{buffer_name}" if name else buffer_name] = buffer.detach().cpu()
+    return buffers
+
+
+def _restore_non_persistent_buffers(module: torch.nn.Module, buffers: dict[str, torch.Tensor], device: torch.device) -> None:
+    for name, buffer in buffers.items():
+        parent_module, leaf_name = _get_parent_module_and_name(module, name)
+        parent_module.register_buffer(leaf_name, buffer.to(device), persistent=False)
+
+
+@torch.no_grad()
+def _moe_infer_every_expert(self, x, flat_expert_indices, flat_expert_weights):
+    # MoEBlock.moe_infer with one change: experts that got no tokens still run. Every expert is its own FSDP unit, so a
+    # rank skipping one skips its all-gather, and ranks holding different tokens (USP shards, CFG cond/uncond) route
+    # differently.
+    expert_cache = torch.zeros_like(x)
+    idxs = flat_expert_indices.argsort()
+    tokens_per_expert = flat_expert_indices.bincount(minlength=len(self.experts)).cumsum(0)
+    token_idxs = idxs // self.moe_top_k
+
+    for i, end_idx in enumerate(tokens_per_expert):
+        start_idx = 0 if i == 0 else tokens_per_expert[i - 1]
+        exp_token_idx = token_idxs[start_idx:end_idx]
+        expert_out = self.experts[i](x[exp_token_idx])
+        expert_out.mul_(flat_expert_weights[idxs[start_idx:end_idx]])
+        expert_cache.index_add_(0, exp_token_idx, expert_out)
+
+    return expert_cache
+
+
+def sync_moe_experts(diffusion_model: torch.nn.Module) -> None:
+    """Make every rank run every MoE expert (Hunyuan3D 2.1), so the per-expert FSDP all-gathers pair up across ranks."""
+    for module in diffusion_model.modules():
+        if hasattr(module, "moe_infer") and isinstance(getattr(module, "experts", None), torch.nn.ModuleList):
+            module.moe_infer = types.MethodType(_moe_infer_every_expert, module)
+
+
 def _collect_controlnet_shared_modules(diffusion_model: torch.nn.Module) -> set[torch.nn.Module]:
     """Collect base model sub-modules that ControlNet calls directly.
 
@@ -359,8 +408,12 @@ def patch_fsdp(self):
             if count > 0:
                 print(f"[Rank {self.rank}] Materialized {count} excluded ControlNet-shared params on {target_device}")
 
+        if self.fsdp_buffers:
+            _restore_non_persistent_buffers(diffusion_model, self.fsdp_buffers, target_device)
+
         _pre_init_fsdp(diffusion_model)
     disable_prefix_cache(diffusion_model)
+    sync_moe_experts(diffusion_model)
     self.fsdp_state_dict = None
 
     print("FSDP registered successfully.")
@@ -380,6 +433,7 @@ class FSDPModelPatcher(comfy.model_patcher.ModelPatcher):
         device_mesh=None,
         is_cpu_offload: bool = False,
         fast_disk=False,
+        fsdp_buffers: dict | None = None,
     ):
         super().__init__(
             model=model,
@@ -391,6 +445,7 @@ class FSDPModelPatcher(comfy.model_patcher.ModelPatcher):
         )
         self.rank = rank
         self.fsdp_state_dict = fsdp_state_dict
+        self.fsdp_buffers = fsdp_buffers
         self.device_mesh = device_mesh
         self.is_cpu_offload = is_cpu_offload
         self._has_quantized_dtensor_shards: bool | None = None
@@ -508,6 +563,7 @@ class FSDPModelPatcher(comfy.model_patcher.ModelPatcher):
         n.__class__ = FSDPModelPatcher
         n.rank = self.rank
         n.fsdp_state_dict = self.fsdp_state_dict
+        n.fsdp_buffers = self.fsdp_buffers
         n.device_mesh = self.device_mesh
         n.is_cpu_offload = self.is_cpu_offload
         n._has_quantized_dtensor_shards = self._has_quantized_dtensor_shards

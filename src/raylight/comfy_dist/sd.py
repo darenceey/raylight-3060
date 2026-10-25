@@ -1275,5 +1275,7 @@ def fsdp_load_diffusion_model_stat_dict(sd, rank, device_mesh, is_cpu_offload, m
     if len(left_over) > 0:
         logging.info("left over keys in diffusion model: {}".format(left_over))
     state_dict = model_patcher.model_state_dict(filter_prefix="diffusion_model.")
+    # Taken before the meta move; the patcher carries them to the workers that get the meta model
+    model_patcher.fsdp_buffers = comfy_dist.model_patcher.collect_non_persistent_buffers(model_patcher.model.diffusion_model)
     model_patcher.model.diffusion_model.to("meta")
     return model_patcher, state_dict

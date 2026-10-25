@@ -1,3 +1,4 @@
+import collections
 import os
 import sys
 import gc
@@ -376,6 +377,10 @@ def _build_ray_guider(model, guider_spec):
     return guider
 
 
+# Patched clones share the loaded model, so each kept state costs little; the cap only bounds a long session
+_MAX_MODEL_STATES = 64
+
+
 class RayWorker:
     def __init__(self, local_rank, device_id, parallel_dict):
         worker_cli_args = _apply_worker_comfy_cli_args_from_env()
@@ -390,6 +395,10 @@ class RayWorker:
         self.cached_base_model = None
         self.cached_base_key = None
         self.active_request_key = None
+        # Patched models by the token in the RAY_ACTORS value of the node that made them (see ray_patch_decorator),
+        # and the model the last loader produced, before any Ray patch node
+        self.model_states = collections.OrderedDict()
+        self.loaded_model = None
 
         self.local_rank = local_rank
         self.global_world_size = self.parallel_dict["global_world_size"]
@@ -473,6 +482,7 @@ class RayWorker:
             raise ValueError("Model recieved is not meta, can cause OOM in large model")
 
     def set_meta_model(self, model):
+        self._forget_model_states()
         base_model = getattr(model, "model", model)
         first_param_device = next(base_model.parameters()).device
         if first_param_device == torch.device("meta"):
@@ -740,6 +750,32 @@ class RayWorker:
     def model_function_runner(self, fn, *args, **kwargs):
         self.model = fn(self.model, *args, **kwargs)
 
+    def save_model_state(self, token, loaded=False):
+        if loaded:
+            self.loaded_model = self.model
+        self.model_states[token] = self.model
+        while len(self.model_states) > _MAX_MODEL_STATES:
+            self.model_states.popitem(last=False)
+
+    def reset_to_loaded_model(self):
+        """Drop the Ray patches: back to the model the last loader produced."""
+        if self.loaded_model is not None:
+            self.model = self.loaded_model
+        self._forget_model_states()
+
+    def _forget_model_states(self):
+        # Patched clones of a model being replaced must not keep it alive
+        self.model_states.clear()
+        self.loaded_model = None
+
+    def activate_model_state(self, token):
+        model = self.model_states.get(token)
+        if model is None:
+            return False
+        self.model_states.move_to_end(token)
+        self.model = model
+        return True
+
     def model_function_runner_get_values(self, fn, *args, **kwargs):
         return fn(self.model, *args, **kwargs)
 
@@ -834,11 +870,16 @@ class RayWorker:
         )
 
     def load_unet(self, unet_path, model_options):
+        # Keep self.model as it is until a reload: the model last in use is the one the cleanup below must unpatch.
+        # A reload of the same model returns early instead, with the model as loaded, without earlier Ray patches.
+        loaded_model = self.loaded_model
+        self._forget_model_states()
         if self.parallel_dict["is_fsdp"] is True:
             active_key = self._active_model_key(unet_path, model_options)
 
             # Fast path: same base model + same LoRA — reuse FSDP-wrapped model
             if self.model is not None and self.active_request_key == active_key and not self._fsdp_init_failed():
+                self.model = loaded_model or self.model
                 base_model = getattr(self.model, "model", self.model)
                 self.overwrite_cast_dtype = getattr(base_model, "manual_cast_dtype", None)
                 self.is_model_loaded = True
@@ -912,6 +953,7 @@ class RayWorker:
             )
 
             if self.model is not None and self.active_request_key == active_key:
+                self.model = loaded_model or self.model
                 base_model = getattr(self.model, "model", self.model)
                 self.overwrite_cast_dtype = getattr(base_model, "manual_cast_dtype", None)
                 self.is_model_loaded = True
@@ -984,6 +1026,7 @@ class RayWorker:
             return
 
     def load_gguf_unet(self, unet_path, dequant_dtype, patch_dtype, use_mmap=None):
+        self._forget_model_states()
         self._reset_active_model()
         self._invalidate_non_fsdp_cache()
         self._free_cached_aux_models()
@@ -1059,6 +1102,7 @@ class RayWorker:
             del lora_model
 
     def kill(self):
+        self._forget_model_states()
         self._free_cached_aux_models()
         self._invalidate_non_fsdp_cache()
         self.model = None

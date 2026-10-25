@@ -242,6 +242,39 @@ def usp_dit_forward(
     # ...
 ```
 
+### Gathered K/V (Qwen Image 2.1, Hunyuan3D, TRELLIS.2)
+
+**Locations**: `diffusion_models/qwen_image/xdit_context_parallel21.py`, `diffusion_models/hunyuan3d/`,
+`diffusion_models/hunyuan3dv2_1/`, `diffusion_models/trellis2/`
+
+These models keep every rank's queries local and all-gather only K and V across the SP group
+(`shard_sequence` / `gather_sequence` in `diffusion_models/utils.py`), then run ComfyUI's own attention:
+
+```python
+x, length = shard_sequence(x, dim=1)        # zero-pad to a multiple of the SP degree, keep this rank's chunk
+...
+k = gather_sequence(k, length, dim=1)       # all ranks' keys, padding dropped
+v = gather_sequence(v, length, dim=1)
+out = optimized_attention(q, k, v, heads)   # local queries against the whole sequence
+...
+x = gather_sequence(x, length, dim=1)
+```
+
+The padding never becomes a key, so the result is exact for any sequence length and GPU count: Hunyuan3D 2.1's 4097
+tokens (4096 latents and a time token), TRELLIS.2's voxel counts, or Qwen Image 2.1's block-causal prefix. Per layer it
+moves as much data as Ulysses on two GPUs, and works for any head count.
+
+Because the attention itself is ComfyUI's, the `XFuser_attention` setting does not apply to these models; ComfyUI's
+own attention choice (`--use-sage-attention`, `--use-flash-attention`, PyTorch SDPA) does. `ring_degree` and
+`ulysses_degree` only set the size of the SP group.
+
+- **Hunyuan3D 2.0 / 2.0 mini** run ComfyUI's Flux blocks unchanged; the USP forward appends an `attn1_patch` that
+  swaps in the gathered K/V, so other attention patches still see the rank's own tokens.
+- **Hunyuan3D 2.1** replaces each block's self-attention. Cross-attention and the MoE feed-forward are per token.
+- **TRELLIS.2 / Pixal3D** replace the self-attention of the structure model (a 16^3 grid) and the three sparse
+  models. The sparse models split every batch item's voxels on their own, so CFG copies and seeds with different
+  voxel counts keep the native per-item layout. Pixal3D's projected features are split with their voxels.
+
 ## Attention Replacement
 
 ### xfuser Attention Factory
@@ -339,4 +372,4 @@ USP requires all-gather after attention:
 
 ---
 
-*Last updated: 2026-04-11*
+*Last updated: 2026-10-25*
