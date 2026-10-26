@@ -8,7 +8,7 @@ import comfy.sample
 from comfy.k_diffusion import sa_solver
 from comfy.comfy_types import IO, ComfyNodeABC, InputTypeDict
 import comfy.utils
-from .ray_patch_decorator import MODEL_STATE_KEY, ray_patch_with_return, use_model_state
+from .ray_patch_decorator import MODEL_STATE_KEY, ray_patch_with_return, use_model_state, without_model_state
 
 from raylight.distributed_worker.utils import Noise_EmptyNoise, Noise_RandomNoise
 
@@ -53,7 +53,7 @@ def _normalize_grouped_guiders(guiders: list, expected_length: int):
             continue
         if current_ray_actors is ray_actors:
             continue
-        if {**current_ray_actors, MODEL_STATE_KEY: None} != {**ray_actors, MODEL_STATE_KEY: None}:
+        if without_model_state(current_ray_actors) != without_model_state(ray_actors):
             raise ValueError("All RAY_GUIDER inputs must be created from the same ray actor set")
         if current_ray_actors.get(MODEL_STATE_KEY) != ray_actors.get(MODEL_STATE_KEY):
             raise ValueError("All RAY_GUIDER inputs must use the same Ray model: the workers hold one model at a time")

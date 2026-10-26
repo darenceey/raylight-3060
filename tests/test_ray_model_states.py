@@ -9,11 +9,12 @@ from raylight.distributed_worker.ray_worker import RayWorker
 
 
 class _Model:
-    def __init__(self, patches=()):
+    def __init__(self, patches=(), name="model"):
         self.patches = tuple(patches)
+        self.name = name
 
     def clone(self):
-        return _Model(self.patches)
+        return _Model(self.patches, self.name)
 
 
 class _Actor:
@@ -43,6 +44,24 @@ class _PatchNode:
         return m
 
 
+class _Loader:
+    """Puts a new model in the workers, as RayUNETLoader does."""
+
+    def __init__(self, workers):
+        self.workers = workers
+        self.loads = 0
+
+    def load(self, ray_actors, name):
+        def reload():
+            self.load(ray_actors, name)
+
+        self.loads += 1
+        for w in self.workers:
+            w._forget_model_states()
+            w.model = _Model(name=name)
+        return decorator.save_model_state(ray_actors, loaded=True, replay=reload)
+
+
 @pytest.fixture
 def workers(monkeypatch):
     monkeypatch.setattr(decorator, "ray", types.SimpleNamespace(get=lambda value: value))
@@ -70,6 +89,26 @@ def test_cached_stage_patches_come_back_on_a_rerun(workers):
     # second run with a new image: ComfyUI reuses the cached structure patch node and only re-runs the sampler
     assert _sample(workers, structure) == [("shift 5",)] * 2
     assert _sample(workers, shape) == [("shift 5", "shift 3")] * 2
+
+
+def test_two_models_in_the_same_workers_come_back_on_a_rerun(workers):
+    workers, init = workers
+    loader, node = _Loader(workers), _PatchNode()
+
+    def sample(ray_actors):
+        decorator.use_model_state(ray_actors)
+        return [(w.model.name, w.model.patches) for w in workers]
+
+    # first run, as in the Wan 2.2 template: high noise model, its patches and sampler, then the same for the low noise one
+    (high,) = node.patch(loader.load(init, "high"), "shift 8")
+    assert sample(high) == [("high", ("shift 8",))] * 2
+    (low,) = node.patch(loader.load(init, "low"), "shift 5")
+    assert sample(low) == [("low", ("shift 5",))] * 2
+
+    # second run with a new seed: ComfyUI reuses the cached loaders and patch nodes and only re-runs the samplers
+    assert sample(high) == [("high", ("shift 8",))] * 2
+    assert sample(low) == [("low", ("shift 5",))] * 2
+    assert loader.loads == 4
 
 
 def test_branches_off_one_model_do_not_see_each_other(workers):

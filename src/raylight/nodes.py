@@ -941,6 +941,9 @@ class RayUNETLoader:
     CATEGORY = "Raylight"
 
     def load_ray_unet(self, ray_actors_init, unet_name, weight_dtype, lora=None):
+        def reload():
+            self.load_ray_unet(ray_actors_init, unet_name, weight_dtype, lora)
+
         ray_actors, gpu_actors, parallel_dict = ensure_fresh_actors(ray_actors_init)
         _free_host_models_if_contended(ray_actors)
 
@@ -987,7 +990,7 @@ class RayUNETLoader:
                 already_loaded = ray.get(gpu_actors[0].check_model_loaded.remote(unet_path, model_options))
                 if already_loaded:
                     ray.get([actor.reset_to_loaded_model.remote() for actor in gpu_actors])
-                    return (save_model_state(ray_actors, loaded=True),)
+                    return (save_model_state(ray_actors, loaded=True, replay=reload),)
 
             if num_replicas <= 1:
                 # Single replica — all GPUs share one FSDP-sharded model
@@ -1053,7 +1056,7 @@ class RayUNETLoader:
 
         patch_parallelism(gpu_actors, parallel_dict)
 
-        return (save_model_state(ray_actors, loaded=True),)
+        return (save_model_state(ray_actors, loaded=True, replay=reload),)
 
 
 class RayLoraLoader:

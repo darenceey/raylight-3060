@@ -170,10 +170,17 @@ node produced:
 - patch nodes and samplers call `use_model_state` first, which puts the workers back on the model their input names.
 
 A sampler therefore runs with the patches of its own chain, also when ComfyUI reuses cached patch nodes on a re-run or
-runs another branch's patches in between - for example per-stage settings like the TRELLIS.2 template's. A worker
-drops its saved models when it loads another one; a value whose model is gone falls back to the workers' current model
-with a warning, as does a value without a token. A node that changes the worker model outside `@ray_patch` should do
-the same two calls.
+runs another branch's patches in between - for example per-stage settings like the TRELLIS.2 template's.
+
+A worker drops its saved models when it loads another one. So the value also carries how to build its model again
+(`model_recipe`): the loader call, then each patch node's call (`save_model_state(..., replay=...)`). When the model a
+value names is gone, `use_model_state` reruns those calls. This is what keeps two-model workflows right on a re-run:
+the Wan 2.2 template loads the high noise model, samples, then loads the low noise model into the same workers, and on
+the next run ComfyUI reuses both cached loaders and only re-runs the samplers, so each sampler loads its model again
+(the cost of a load per stage, as on the first run) instead of sampling with the other one. A value without a token,
+or one made by a node that gave no replay, falls back to the workers' current model with a warning. A node that changes
+the worker model outside `@ray_patch` should call `use_model_state`, apply its change with `run_model_patch`, and pass
+the replay that returns to `save_model_state`.
 
 ### Conditioning Sent to Workers
 

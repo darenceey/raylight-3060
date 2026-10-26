@@ -9,6 +9,7 @@ Raylight. Using Ray Worker to manage multi GPU sampler setup. With XDiT-XFuser a
 
 <details><summary><strong>Click to expand changelog</strong></summary>
 
+- Two-model workflows (Wan 2.2 high / low noise) are right on a re-run: ComfyUI reused both cached loaders, so the high noise sampler ran with the low noise model the workers still held. A Ray model now loads again when its sampler needs it. The Wan 2.2 template uses the FP16 models with FSDP and CPU offload.
 - GGUF models now run CFG parallel: the GGUF loader only patched USP, so every CFG rank sampled the whole batch.
 - LTX-2.3 / LTX-2.5: CFG parallel, and FSDP on current ComfyUI (its fused feed-forward skipped FSDP's weight gather). USP stays exact when a sequence does not divide by the GPU count, as with ID-LoRA reference audio, and applies guide attention strength and guide masks (LTXV Add Guide). New Ray nodes: LTXV Dual CFG Guider, LTXV Spatio-Temporal Guidance, LTXV Modality Guidance and LTXV Duration Predictor; LTXV Reference Audio now also runs under CFG parallel. LTX-2.5 GGUF example workflow.
 - Hunyuan3D 2.0 / 2.1 and TRELLIS.2 / Pixal3D: USP, FSDP and CFG, with example workflows.

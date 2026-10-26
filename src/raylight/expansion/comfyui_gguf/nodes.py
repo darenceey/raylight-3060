@@ -203,6 +203,9 @@ class RayGGUFLoader:
         patch_dtype,
         lora=None,
     ):
+        def reload():
+            self.load_ray_unet(ray_actors_init, unet_name, dequant_dtype, patch_dtype, lora)
+
         ray_actors, gpu_actors, parallel_dict = ensure_fresh_actors(ray_actors_init)
 
         unet_path = folder_paths.get_full_path_or_raise("unet", unet_name)
@@ -256,7 +259,7 @@ class RayGGUFLoader:
         # The same patches as RayUNETLoader; this loader used to skip CFG parallel, so every CFG rank ran the whole batch
         patch_parallelism(gpu_actors, parallel_dict)
 
-        return (save_model_state(ray_actors, loaded=True),)
+        return (save_model_state(ray_actors, loaded=True, replay=reload),)
 
 
 NODE_CLASS_MAPPINGS = {

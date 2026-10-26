@@ -134,14 +134,14 @@
         "ver": "0.3.55",
         "models": [
           {
-            "name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
-            "url": "https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors?download=true",
+            "name": "umt5_xxl_fp16.safetensors",
+            "url": "https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/text_encoders/umt5_xxl_fp16.safetensors?download=true",
             "directory": "text_encoders"
           }
         ]
       },
       "widgets_values": [
-        "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+        "umt5_xxl_fp16.safetensors",
         "wan",
         "default"
       ]
@@ -402,7 +402,7 @@
         "ver": "0.2.0"
       },
       "widgets_values": [
-        "Wan_2_2_I2V_A14B_HIGH_lightx2v_4step_lora_v1030_rank_64_bf16.safetensors",
+        "Wan_2_2_I2V_A14B_HIGH_lightx2v_4step_lora_260412_rank_64_fp16.safetensors",
         1
       ]
     },
@@ -445,10 +445,17 @@
       "properties": {
         "Node name for S&R": "RayUNETLoader",
         "cnr_id": "raylight",
-        "ver": "0.2.0"
+        "ver": "0.2.0",
+        "models": [
+          {
+            "name": "wan2.2_i2v_high_noise_14B_fp16.safetensors",
+            "url": "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_i2v_high_noise_14B_fp16.safetensors?download=true",
+            "directory": "diffusion_models"
+          }
+        ]
       },
       "widgets_values": [
-        "Wan2_2-I2V-A14B-HIGH_fp8_e4m3fn_scaled_KJ.safetensors",
+        "wan2.2_i2v_high_noise_14B_fp16.safetensors",
         "default"
       ]
     },
@@ -491,10 +498,17 @@
       "properties": {
         "Node name for S&R": "RayUNETLoader",
         "cnr_id": "raylight",
-        "ver": "0.2.0"
+        "ver": "0.2.0",
+        "models": [
+          {
+            "name": "wan2.2_i2v_low_noise_14B_fp16.safetensors",
+            "url": "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_i2v_low_noise_14B_fp16.safetensors?download=true",
+            "directory": "diffusion_models"
+          }
+        ]
       },
       "widgets_values": [
-        "Wan2_2-I2V-A14B-LOW_fp8_e4m3fn_scaled_KJ.safetensors",
+        "wan2.2_i2v_low_noise_14B_fp16.safetensors",
         "default"
       ]
     },
@@ -533,10 +547,14 @@
         2,
         1,
         1,
+        1,
         false,
         false,
+        true,
+        true,
+        "TORCH_FLASH",
         false,
-        "TORCH_FLASH"
+        false
       ]
     },
     {

@@ -11,6 +11,15 @@ from functools import wraps
 # a ComfyUI MODEL output keeps its patches, even when ComfyUI reuses cached patch nodes, or runs another branch's
 # patches in between.
 MODEL_STATE_KEY = "model_state"
+# How to build that model again: the loader call, then each Ray patch on top of it. A loader drops the models of the
+# loader before it, so when a workflow loads two models into the same workers (Wan 2.2's high and low noise experts),
+# a rerun that only reruns the samplers finds the other model there: ComfyUI keeps the loader outputs cached.
+MODEL_RECIPE_KEY = "model_recipe"
+
+
+def without_model_state(ray_actors):
+    """ray_actors without the keys that name its model, to compare the actor sets of two RAY_ACTORS values."""
+    return {**ray_actors, MODEL_STATE_KEY: None, MODEL_RECIPE_KEY: None}
 
 
 def use_model_state(ray_actors):
@@ -19,20 +28,44 @@ def use_model_state(ray_actors):
     if token is None:
         return
     found = ray.get([actor.activate_model_state.remote(token) for actor in ray_actors["workers"]])
-    if not all(found):
+    if all(found):
+        return
+    recipe = ray_actors.get(MODEL_RECIPE_KEY)
+    if recipe is None:
         # The workers reloaded since (another loader, recovered workers): keep their current model
         logging.warning("[Raylight] Ray workers no longer hold the patched model this node was wired to; "
                         "using their current model. Re-run the Ray patch nodes in front of it to restore it.")
+        return
+    logging.info("[Raylight] Ray workers hold another model now: loading the model this node was wired to again")
+    for step in recipe:
+        step()
+    ray.get([actor.save_model_state.remote(token) for actor in ray_actors["workers"]])
 
 
-def save_model_state(ray_actors, loaded=False):
+def save_model_state(ray_actors, loaded=False, replay=None):
     """Remember the workers' current model; returns the RAY_ACTORS value that names it.
 
     loaded marks the model a loader just produced, which the workers return to when a loader runs again.
+    replay redoes what the node did to the workers' model (a loader: loads it, a Ray patch: patches it), so
+    use_model_state can rebuild this model after another loader replaced it.
     """
     token = uuid.uuid4().hex
     ray.get([actor.save_model_state.remote(token, loaded=loaded) for actor in ray_actors["workers"]])
-    return {**ray_actors, MODEL_STATE_KEY: token}
+    recipe = () if loaded else ray_actors.get(MODEL_RECIPE_KEY)
+    # A node that cannot say how to redo its change leaves a model that cannot be rebuilt
+    recipe = None if recipe is None or replay is None else (*recipe, replay)
+    return {**ray_actors, MODEL_STATE_KEY: token, MODEL_RECIPE_KEY: recipe}
+
+
+def run_model_patch(ray_actors, fn, *args, **kwargs):
+    """Apply fn(model, *args, **kwargs) to every worker's model; returns the call that applies it again."""
+    gpu_workers = ray_actors["workers"]
+
+    def apply():
+        ray.get([actor.model_function_runner.remote(fn, *args, **kwargs) for actor in gpu_workers])
+
+    apply()
+    return apply
 
 
 # Decorator to make a patch function Ray-distributable.
@@ -45,12 +78,8 @@ def ray_patch(patch_func):
             return patch_func(self, model, *inner_args, **inner_kwargs)
 
         use_model_state(ray_actors)
-        gpu_workers = ray_actors["workers"]
-        futures = [actor.model_function_runner.remote(_patch, *args, **kwargs)
-                   for actor in gpu_workers]
-
-        ray.get(futures)
-        return (save_model_state(ray_actors),)
+        replay = run_model_patch(ray_actors, _patch, *args, **kwargs)
+        return (save_model_state(ray_actors, replay=replay),)
     return wrapper
 
 
